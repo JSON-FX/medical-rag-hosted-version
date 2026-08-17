@@ -1,0 +1,53 @@
+[project]
+name = "medical-rag-hosted"
+version = "0.1.0"
+description = "Hosted profile of the Medical RAG system: hybrid retrieval, RRF, a two-stage confidence gate, and cited answers."
+readme = "README.md"
+requires-python = ">=3.12"
+
+# rag_core imports nothing outside the standard library. That is the point of
+# the package, and it is enforced by tests/unit/test_core_purity.py. Provider
+# SDKs and database drivers arrive with the adapters in TICKET-2 and TICKET-3,
+# as optional dependencies — never here.
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rag_core", "src/rag_adapters"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+# `auto` lets async tests run without decorating each one. Leaving
+# asyncio_default_fixture_loop_scope unset emits a DeprecationWarning on every
+# run, which trains you to ignore warnings.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+# NOT the ruff default of 88. The modules ported from the local build were
+# written at ~95 columns, and their wide explanatory comments carry measured
+# behaviour. Reformatting to 88 produces a large meaningless diff against the
+# source repo and makes real divergence impossible to spot — see the port
+# faithfulness checks in the plan's validation commands.
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+files = ["src"]
+python_version = "3.12"
+strict = true
