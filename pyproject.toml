@@ -19,6 +19,10 @@ postgres = [
     "asyncpg>=0.30",
     "pgvector>=0.3",
 ]
+providers = [
+    "google-genai>=1.0",
+    "groq>=0.13",
+]
 
 [dependency-groups]
 dev = [
@@ -27,7 +31,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
     "asyncpg-stubs>=0.30",
-    "medical-rag-hosted[postgres]",
+    "medical-rag-hosted[postgres,providers]",
 ]
 
 [build-system]
@@ -49,8 +53,11 @@ asyncio_default_fixture_loop_scope = "function"
 # `uv run pytest` must stay green on a machine with no database at all; CI runs
 # `uv run pytest -m postgres` as a second step against a service container.
 # A command-line -m REPLACES this one rather than merging with it.
-markers = ["postgres: requires a live Postgres with pgvector (deselected by default)"]
-addopts = '-m "not postgres"'
+markers = [
+    "postgres: requires a live Postgres with pgvector (deselected by default)",
+    "live: calls a real provider API and costs quota (deselected by default, never in CI)",
+]
+addopts = '-m "not postgres and not live"'
 
 [tool.ruff]
 # Prose is not ours to reformat. ruff formats Python code blocks inside

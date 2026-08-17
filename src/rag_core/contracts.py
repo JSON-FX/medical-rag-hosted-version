@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -120,6 +121,43 @@ def to_context_chunk(chunk: Chunk) -> ContextChunk:
         page_number=int(chunk.anchor),
         text=chunk.content,
     )
+
+
+# --------------------------------------------------------------------------
+# Generation
+# --------------------------------------------------------------------------
+
+
+class TokenStream:
+    """Tokens, plus which model actually produced them.
+
+    `served_by` is None until the first token arrives, and is the `model_id` of
+    whichever provider produced it thereafter. It cannot be known any earlier:
+    the entire point of the failover chain is that the answer to "who served
+    this" depends on whether the primary accepted the request, and finding out
+    in advance would mean a throwaway probe that doubles cost and latency to
+    learn what the first token reveals for free.
+
+    Provenance lives on the stream rather than on the generator because
+    `Profile` holds one generator instance and the API shell serves concurrent
+    requests through it. A `self.last_served_by` attribute would be a race that
+    reports the wrong provider under exactly the load a demo gets while it is
+    being evaluated, and no test would catch it (ADR-004, PRD F14).
+    """
+
+    def __init__(self, tokens: AsyncIterator[Token], model_id: str | None = None) -> None:
+        self._tokens = tokens
+        self._model_id = model_id
+        self.served_by: str | None = None
+
+    def __aiter__(self) -> TokenStream:
+        return self
+
+    async def __anext__(self) -> Token:
+        token = await self._tokens.__anext__()
+        if self.served_by is None:
+            self.served_by = self._model_id
+        return token
 
 
 # --------------------------------------------------------------------------

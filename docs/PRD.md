@@ -158,7 +158,7 @@ Criterion 6 is the one most likely to fail. Trial credits that expire are disqua
 
 ## 12. Open questions
 
-1. Does the chosen embedding model's truncation to 768 dimensions need renormalization, and does skipping it measurably hurt cosine ranking? Assume yes; verify.
+1. ~~Does the chosen embedding model's truncation to 768 dimensions need renormalization, and does skipping it measurably hurt cosine ranking? Assume yes; verify.~~ — **First half answered.** The model is `gemini-embedding-001`, natively 3072-dimensional and reduced via `output_dimensionality`, which the SDK documents as truncating "excessive values in the output embedding … from the end". Truncating a matryoshka embedding breaks its unit norm, so **yes, it needs renormalizing**, and `rag_adapters/gemini.py` does it with a test pinning `‖v‖ = 1`. The gate thresholds on raw cosine similarity, so a varying magnitude would land directly on what τ measures. **Second half still unmeasured**: whether *skipping* renormalization would measurably hurt ranking is untested, since the adapter has never shipped without it. TICKET-8 could measure it cheaply while sweeping τ.
 2. Should the lexical half use `ts_rank` or `ts_rank_cd`? Coverage density may matter more than frequency for clinical terminology.
 3. Is one shared corpus enough to make the refusal path feel natural, or does the demo need a deliberately narrow corpus so out-of-scope questions are easy for a visitor to invent?
 4. Should the telemetry panel be visible by default, or behind a toggle? Visible by default makes the engineering legible but adds noise for a non-technical reader.

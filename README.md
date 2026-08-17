@@ -60,6 +60,29 @@ uv run pytest -m postgres
 
 See [`db/README.md`](db/README.md).
 
+The provider adapters are held to that same suite using SDK doubles, so they need no key
+either. A separate set of `live`-marked tests calls the real APIs and costs quota — they
+never run in CI:
+
+```bash
+export GEMINI_API_KEY=... GROQ_API_KEY=...
+uv run pytest -m live
+```
+
+## Providers
+
+Embeddings come from `gemini-embedding-001`, reduced from its native 3072 dimensions to the
+schema's 768. That reduction truncates rather than re-projects, which breaks the unit norm
+cosine similarity depends on, so the adapter renormalises — and pins it with a test.
+
+Generation runs Groq first and Gemini second, behind a failover chain. Groq leads because
+time-to-first-token is the number that matters for a demo; Gemini is a different company
+with a different quota and a different outage, which is the point. Every response reports
+which one served it.
+
+Failover happens only before the first token. Once text has reached the reader it cannot be
+retracted, so a mid-stream failure is reported as truncated rather than silently replaced.
+
 ## On parity with the local build
 
 The pure modules — `chunking`, `fusion`, `gate`, `prompts`, `sentinel` — are ported from the local

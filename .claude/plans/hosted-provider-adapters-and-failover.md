@@ -192,7 +192,9 @@ here. From `SRC/rag/embeddings.py:32`:
 ```python
 def __init__(self, cfg: OllamaConfig, transport: Callable[[str, dict], dict] | None = None):
     self.cfg = cfg
-    self._transport = transport or (lambda url, payload: _http_transport(url, payload, cfg.request_timeout_s))
+    self._transport = transport or (
+        lambda url, payload: _http_transport(url, payload, cfg.request_timeout_s)
+    )
 ```
 
 **Guards that name both numbers.** From `SRC/rag/embeddings.py:46-50`:
@@ -295,7 +297,9 @@ class TokenStream:
     """
 
     def __init__(self, tokens: AsyncIterator[Token], model_id: str | None = None) -> None: ...
+
     served_by: str | None
+
     def __aiter__(self) -> TokenStream: ...
     async def __anext__(self) -> Token: ...
 ```
