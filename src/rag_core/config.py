@@ -44,7 +44,24 @@ class GenerationConfig:
     primary_provider: str = "groq"
     primary_model_id: str = "llama-3.3-70b-versatile"
     secondary_provider: str = "gemini"
-    secondary_model_id: str = "gemini-2.0-flash"
+    # An ALIAS, deliberately, where the primary is pinned.
+    #
+    # Pinning was the first instinct and the evidence contradicted it. In one
+    # session the live suite got 404s from two successive pinned defaults:
+    # gemini-2.0-flash ("no longer available") and then gemini-2.5-flash ("no
+    # longer available to new users"). A pinned model that retires requires
+    # touching code, and ADR-004's whole purpose is "surviving a provider
+    # outage or a quota change WITHOUT touching code" — on an artifact that
+    # has to still work thirty days after anyone last looked at it (PRD
+    # success criterion 6, "the one most likely to fail").
+    #
+    # The cost is that the model underneath can change, and ADR-004 also
+    # requires prompt behaviour to be validated against both models. That is
+    # what the `live`-marked sentinel test covers: it checks the refusal
+    # behaviour against whatever the alias currently resolves to, so drift
+    # surfaces as a failing test rather than as a wrong answer. TICKET-6's
+    # scheduled check is what runs it unattended.
+    secondary_model_id: str = "gemini-flash-latest"
     request_timeout_s: int = 300
 
 
@@ -148,7 +165,7 @@ def load_config(env: Mapping[str, str] | None = None) -> RagConfig:
             primary_provider=_s("PRIMARY_PROVIDER", "groq"),
             primary_model_id=_s("PRIMARY_MODEL", "llama-3.3-70b-versatile"),
             secondary_provider=_s("SECONDARY_PROVIDER", "gemini"),
-            secondary_model_id=_s("SECONDARY_MODEL", "gemini-2.0-flash"),
+            secondary_model_id=_s("SECONDARY_MODEL", "gemini-flash-latest"),
             request_timeout_s=_i("GENERATION_TIMEOUT_S", 300),
         ),
         chunk=ChunkConfig(size=_i("CHUNK_SIZE", 1000), overlap=_i("CHUNK_OVERLAP", 150)),

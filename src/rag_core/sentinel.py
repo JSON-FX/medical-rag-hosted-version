@@ -10,7 +10,7 @@ transport concern and does not belong here.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator
 
 from .prompts import SENTINEL
 
@@ -53,6 +53,51 @@ def filter_sentinel(
     decided = False
 
     for delta in deltas:
+        if decided:
+            yield ("token", delta)
+            continue
+        buffer += delta
+        if len(buffer) >= threshold:
+            decided = True
+            if _is_sentinel(buffer, sentinel):
+                yield ("declined", None)
+                return
+            yield ("token", buffer)
+            buffer = ""
+
+    if not decided and buffer:
+        if _is_sentinel(buffer, sentinel):
+            yield ("declined", None)
+        else:
+            yield ("token", buffer)
+
+
+async def filter_sentinel_async(
+    deltas: AsyncIterator[str],
+    sentinel: str = SENTINEL,
+    buffer_chars: int = BUFFER_CHARS,
+) -> AsyncIterator[tuple[str, str | None]]:
+    """The same state machine, over an async token stream.
+
+    A twin rather than a replacement. The sync version above is the vendored
+    port: it carries the regression suite, and the evaluation harness consumes
+    an already-collected list of tokens, so it cannot become async. The API
+    shell reads from a `TokenStream`, which cannot become sync.
+
+    The duplication is the risk, so it is pinned:
+    tests/unit/test_sentinel.py drives both implementations over the same
+    delta sequences and asserts identical output. If they ever drift — and the
+    preamble-boundary case is where they would — that test fails, rather than
+    the shell quietly leaking a raw sentinel to a reader.
+
+    Every decision below is delegated to `_is_sentinel` and the shared
+    constants, so only the iteration differs.
+    """
+    threshold = max(buffer_chars, PREAMBLE_TOLERANCE + len(sentinel))
+    buffer = ""
+    decided = False
+
+    async for delta in deltas:
         if decided:
             yield ("token", delta)
             continue
