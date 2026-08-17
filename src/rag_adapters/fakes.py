@@ -15,6 +15,7 @@ tests cannot pass against a dimensionality the production path would reject.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from collections.abc import AsyncIterator, Iterable
 
@@ -172,10 +173,16 @@ class FakeGenerator:
         tokens: list[str] | None = None,
         model_id: str = "fake-generator-001",
         fail_with: Exception | None = None,
+        delay_s: float = 0.0,
     ) -> None:
         self.model_id = model_id
         self._tokens = tokens if tokens is not None else ["A ", "grounded ", "answer [1]."]
         self._fail_with = fail_with
+        # Zero by default so the test suite stays instant. The `local` profile
+        # sets it, because a frontend built against a generator that emits its
+        # whole answer in one event loop tick cannot show whether it renders
+        # progressively — which is the one thing that profile exists to check.
+        self._delay_s = delay_s
         self.calls = 0
 
     def stream(self, messages: list[dict[str, str]]) -> TokenStream:
@@ -185,6 +192,8 @@ class FakeGenerator:
             if self._fail_with is not None:
                 raise self._fail_with
             for token in self._tokens:
+                if self._delay_s:
+                    await asyncio.sleep(self._delay_s)
                 yield token
 
         return TokenStream(_generate(), model_id=self.model_id)

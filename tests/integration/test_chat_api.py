@@ -357,6 +357,61 @@ async def test_done_reports_timing_tokens_and_the_serving_provider():
     assert telemetry["truncated"] is False
 
 
+async def test_every_done_frame_carries_the_same_keys():
+    """One frame type, one shape (TICKET-7 D4).
+
+    The retrieval-failure path used to emit a bare
+    `{"type": "done", "truncated": true}` while the other three carried
+    `telemetry`, `was_declined` and `decline_reason`. A client cannot know
+    which shape it is about to get, so it special-cases the odd one forever —
+    and every future client inherits the special case. The four `done` sites
+    are enumerated here so a fifth cannot be added in a different shape.
+    """
+    paths = {
+        "answer": await build_state(),
+        "stage-1 decline": await build_state(),
+        "stage-2 decline": await build_state(generator=FakeGenerator(tokens=[SENTINEL])),
+        "mid-stream failure": await build_state(generator=dying_generator("x" * 60)),
+        "retrieval failure": await build_state(embedder=ExplodingEmbedder()),
+    }
+    off_domain = load_config(env={})
+    paths["stage-1 decline"].cfg = replace(
+        off_domain, gate=replace(off_domain.gate, tau_abstain=0.9)
+    )
+
+    # What proves each path was actually taken. Without these the test passes
+    # while silently exercising the answer path five times.
+    took = {
+        "answer": lambda f: "sources" in kinds(f),
+        "stage-1 decline": lambda f: first(f, "done")["decline_reason"] == "off_domain",
+        "stage-2 decline": lambda f: first(f, "done")["decline_reason"] == "insufficient_context",
+        "mid-stream failure": lambda f: "error" in kinds(f) and "sources" in kinds(f),
+        "retrieval failure": lambda f: kinds(f) == ["error", "done"],
+    }
+
+    expected = {"type", "telemetry", "was_declined", "decline_reason"}
+    for name, state in paths.items():
+        question = OFF_DOMAIN if name == "stage-1 decline" else GROUNDED
+        frames = await frames_for(state, question=question)
+        assert took[name](frames), f"the {name} path was not exercised: {kinds(frames)}"
+        assert set(first(frames, "done")) == expected, (
+            f"the {name} path emits a different done frame: {set(first(frames, 'done'))}"
+        )
+
+
+async def test_the_retrieval_failure_done_frame_reports_truncation_in_telemetry():
+    """Where every other path reports it. Before D4 it sat at the top level,
+    so a client reading `done.telemetry.truncated` saw `false` on the one path
+    where the answer was most definitely incomplete."""
+    frames = await frames_for(await build_state(embedder=ExplodingEmbedder()))
+    done = first(frames, "done")
+    assert done["telemetry"]["truncated"] is True
+    assert done["telemetry"]["total_tokens"] == 0
+    assert done["telemetry"]["provider"] is None
+    assert done["was_declined"] is False, "a failure is not a refusal"
+    assert done["decline_reason"] is None
+
+
 async def test_every_frame_is_valid_json_on_its_own_line():
     """The whole point of NDJSON. An answer containing a newline must not split
     a frame."""
@@ -381,7 +436,7 @@ async def test_an_embedding_failure_yields_a_frame_not_a_truncated_body():
     frames = await frames_for(state)
     assert kinds(frames) == ["error", "done"]
     assert frames[0]["code"] == "provider_unavailable"
-    assert frames[1]["truncated"] is True
+    assert frames[1]["telemetry"]["truncated"] is True
 
 
 async def test_all_providers_unavailable_returns_the_service_message():
