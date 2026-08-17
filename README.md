@@ -126,6 +126,34 @@ what makes the refusal path read as deliberate rather than broken.
 If the index was built by a different embedding model than the one configured, every query returns 503 naming
 both — querying it would return plausible-looking garbage, which is the worst failure mode available.
 
+## Rate limiting and health
+
+Public requests are limited to **10 per minute and 100 per day per IP address**. Exceeding either returns a
+429 with a `Retry-After` header and a message naming the wait in whatever unit reads naturally.
+
+If Upstash is unreachable the limiter **fails open** — the request is allowed and the failure is logged. The
+demo already depends on three free tiers with no SLA; a fourth that can take it down is a worse trade than a
+window of missing quota protection. See [`docs/ARCHITECTURE.md` §8](docs/ARCHITECTURE.md).
+
+```bash
+curl -s localhost:8000/api/health            # shallow: free, never rate limited
+curl -s "localhost:8000/api/health?deep=1"   # probes both providers; costs a generation each
+```
+
+Deep health returns 503 if any provider is unreachable, **including a healthy primary with a dead secondary** —
+a working demo with a dead fallback is one rate limit away from broken.
+
+The same probe runs weekly in CI (`.github/workflows/provider-check.yml`) and can be run by hand:
+
+```bash
+export GEMINI_API_KEY=... GROQ_API_KEY=...
+uv run python -m rag_api.probe
+```
+
+That check is not precautionary. The first time the failover chain was exercised against real providers, the
+secondary was already dead — a pinned model the vendor had retired, with the primary healthy and every test
+passing.
+
 ## On parity with the local build
 
 The pure modules — `chunking`, `fusion`, `gate`, `prompts`, `sentinel` — are ported from the local

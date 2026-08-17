@@ -60,6 +60,30 @@ PROVIDER_REJECTED = Failure(
     message="A required service rejected the request. This is a bug on our side, not yours.",
 )
 
+
+def rate_limited(retry_after: int) -> Failure:
+    """PRD F15: "returning a clear message rather than a raw 429".
+
+    The wait is phrased in whatever unit reads naturally — a daily cap produces
+    a wait measured in hours, and "retry in 47,000 seconds" is not a message a
+    human acts on.
+    """
+    if retry_after >= 3600:
+        wait = f"{round(retry_after / 3600)} hour(s)"
+    elif retry_after >= 60:
+        wait = f"{round(retry_after / 60)} minute(s)"
+    else:
+        wait = f"{retry_after} second(s)"
+    return Failure(
+        status=429,
+        code="rate_limited",
+        message=(
+            f"You have made too many requests. This demo runs on free tiers, so it "
+            f"limits how often any one visitor can ask. Please try again in about {wait}."
+        ),
+    )
+
+
 UNEXPECTED = Failure(
     status=500,
     code="internal_error",

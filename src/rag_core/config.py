@@ -90,6 +90,25 @@ class DatabaseConfig:
 
 
 @dataclass(frozen=True)
+class RateLimitConfig:
+    # Empty credentials mean NO limiter rather than a broken one — that is the
+    # local-development path, and the shell logs that limiting is disabled so
+    # it cannot be mistaken for a limiter that happens to allow everything.
+    #
+    # Both Upstash SDKs offer a from_env() constructor. Not used, for the same
+    # reason the provider keys are read here: this module is the single
+    # boundary between os.environ and the application.
+    redis_url: str = ""
+    redis_token: str = ""
+    # PRD §3 puts the evaluator at ten minutes and a handful of questions, so
+    # 10/minute is generous for real use and stops a script cold. The daily cap
+    # is the one that actually protects quota — a minute limit alone still
+    # permits 14,400 requests a day from one address.
+    per_minute: int = 10
+    per_day: int = 100
+
+
+@dataclass(frozen=True)
 class ChunkConfig:
     size: int = 1000
     overlap: int = 150
@@ -124,6 +143,7 @@ class RagConfig:
     profile: str = "fake"
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
+    rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
@@ -156,6 +176,12 @@ def load_config(env: Mapping[str, str] | None = None) -> RagConfig:
             dimension=_i("EMBED_DIMENSIONS", 768),
             batch_size=_i("EMBED_BATCH_SIZE", 32),
             request_timeout_s=_i("EMBED_TIMEOUT_S", 120),
+        ),
+        rate_limit=RateLimitConfig(
+            redis_url=_s("UPSTASH_REDIS_REST_URL", ""),
+            redis_token=_s("UPSTASH_REDIS_REST_TOKEN", ""),
+            per_minute=_i("RATE_LIMIT_PER_MINUTE", 10),
+            per_day=_i("RATE_LIMIT_PER_DAY", 100),
         ),
         providers=ProvidersConfig(
             gemini_api_key=_s("GEMINI_API_KEY", ""),

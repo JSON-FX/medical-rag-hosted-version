@@ -23,6 +23,7 @@ from rag_core.config import RagConfig, load_config
 
 from .chat import router as chat_router
 from .health import router as health_router
+from .ratelimit import build_limiter
 from .state import AppState, check_manifest
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         return
 
     cfg = load_config()
+    app.state.limiter = build_limiter(cfg.rate_limit)
     app.state.rag = await startup(app, cfg)
     try:
         yield

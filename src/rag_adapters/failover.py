@@ -41,6 +41,26 @@ class FailoverGenerator:
         # answer and is what telemetry reports.
         self.model_id = primary.model_id
 
+    @property
+    def providers(self) -> tuple[GenerationProvider, GenerationProvider]:
+        """The two providers, individually.
+
+        Exposed so ADR-004's fourth action item is possible at all: a probe
+        THROUGH the chain only ever exercises the primary, because that is what
+        the chain is for. Exercising the secondary deliberately means reaching
+        past the abstraction — "test it deliberately rather than assuming it
+        works".
+
+        That is not hypothetical. The first live exercise of this chain found
+        the secondary already dead: a pinned model the vendor had retired, with
+        every test passing and the primary healthy.
+
+        A `probe()` method on the chain was the alternative and was rejected:
+        health checking is not generation, and the GenerationProvider port
+        should not grow a diagnostic the request path never calls.
+        """
+        return (self._primary, self._secondary)
+
     def stream(self, messages: list[dict[str, str]]) -> TokenStream:
         # The generator needs to write `served_by` on the TokenStream that
         # wraps it, which is circular. Resolved with a per-call closure rather

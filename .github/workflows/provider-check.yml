@@ -1,0 +1,43 @@
+name: provider-check
+
+# ADR-004 action item 4: "Health check that exercises the secondary path on a
+# schedule." Not precautionary — the first live exercise of the failover chain
+# found the secondary already dead, a pinned model the vendor had retired, with
+# the primary healthy and every test passing.
+#
+# Weekly is well inside the ADR's ninety-day concern and costs two generations
+# a week. A failed scheduled workflow emails the repository owner by default,
+# which is the alarm; no issue-dedup machinery and no badge to learn to ignore.
+#
+# Runs the probe against the PROVIDERS, not against a deployed URL. A
+# deployment check goes red for reasons unrelated to whether the secondary
+# model still exists, which is the only question being asked.
+
+on:
+  schedule:
+    # Mondays, 09:00 UTC. `schedule` only fires on the default branch, so this
+    # does not run from a feature branch — use workflow_dispatch to try it.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Fails, loudly, if the secrets are not configured. A check that skips
+      # itself when unconfigured is a check that silently never runs.
+      - name: Probe both generation providers
+        run: uv run python -m rag_api.probe
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
