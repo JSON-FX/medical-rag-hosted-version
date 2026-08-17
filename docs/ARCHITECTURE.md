@@ -430,7 +430,13 @@ Two providers means two prompt behaviours to validate and two sets of quirks. Th
 1. [x] Implement failover on rate limit and error, with one retry before falling through — `rag_adapters/failover.py`. **Groq primary, Gemini secondary**: time-to-first-token is the NFR with a hard number and Groq is faster, and two vendors keeps the quota and outage domains genuinely independent.
 2. [~] Surface the active provider — `TokenStream.served_by` carries it per request. The response payload is TICKET-5's and the UI is TICKET-7's.
 3. [~] Validate the prompt against both models — a `live`-marked smoke test asserts both emit the exact sentinel on insufficient context. Validating across the **evaluation set** needs the harness and stays with TICKET-8.
-4. [ ] Health check that exercises the secondary path on a schedule (TICKET-6)
+4. [ ] Health check that exercises the secondary path on a schedule (TICKET-6) — **now evidence-backed rather than precautionary.** The first live exercise of the chain found the secondary was dead: `gemini-2.0-flash` had been retired, and nothing would have discovered it until the failover was actually needed. This ADR's own note anticipated it — "if the secondary is never exercised in ninety days, test it deliberately rather than assuming it works."
+
+### Two corrections from the first live run
+
+**The secondary is an alias, not a pin.** Two successive pinned defaults retired inside one session — `gemini-2.0-flash` ("no longer available") and then `gemini-2.5-flash` ("no longer available *to new users*", which the models-list API does not distinguish). Pinning was the first instinct; the evidence contradicted it, because this ADR exists to survive provider change *without touching code* and a retired pin requires exactly that. The secondary is now `gemini-flash-latest`. The cost — that the model underneath can move, when this ADR also requires prompt behaviour validated against both models — is covered by the `live`-marked sentinel test, which checks the refusal behaviour against whatever the alias currently resolves to.
+
+**Auth failures fail over.** The first implementation classified every non-429 4xx as a bad request, on the reasoning that the secondary would reject it identically. That is true of a malformed request and false of a credential: the secondary is a different vendor holding a different key. A revoked key therefore skipped the fallback entirely — against PRD success criterion 4, which names that exact scenario. 401 and 403 now map to provider-unavailable. Found by revoking a real key; the fake-driven tests had validated the classification against itself.
 
 ### Note on the failover boundary
 

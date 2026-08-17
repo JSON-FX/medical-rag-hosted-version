@@ -2,8 +2,7 @@
 
 **Plan**: `.claude/plans/offline-ingestion-job.md`
 **Branch**: `feature/offline-ingestion-job` (stacked on `feature/hosted-provider-adapters-and-failover`)
-**Status**: **PARTIAL** — 7 of 8 tasks complete. Task 7 (the real Gemini run, decision D3) is blocked on an
-API key not available in this session. See *Outstanding* below.
+**Status**: **COMPLETE** — all 8 tasks. The real run (D3) executed against live Gemini once keys were supplied.
 
 ## Summary
 
@@ -24,7 +23,7 @@ There is no PDF anywhere in the path, and that is the ticket's main finding rath
 | 4 | The ingest pass | `src/ingest/run.py` (CREATE) |
 | 5 | The CLI | `src/ingest/run.py` |
 | 6 | Integration tests | `tests/integration/test_ingestion.py` (CREATE) |
-| 7 | **The real run** | **OUTSTANDING — needs `GEMINI_API_KEY`** |
+| 7 | The real run | executed live — 71 chunks, `gemini-embedding-001` |
 | 8 | Docs | `docs/ARCHITECTURE.md`, `docs/PRD.md`, `README.md` (UPDATE) |
 
 The four fixture files are byte-identical to source, verified with `cmp`.
@@ -54,7 +53,32 @@ id, so it should be a deliberate act.
 | `pypdf` | **not a dependency** |
 | Secrets | clean |
 
-AC #1–#5 met. **AC #6 (the real run) is outstanding.**
+AC #1–#6 all met.
+
+### The real run
+
+| Check | Result |
+|---|---|
+| Ingest | 71 chunks across 3 documents in **6.4s**, all embedded |
+| Dimensions | all 768 |
+| Unit norm | min 0.999999988, max 1.000000013 |
+| Manifest | `gemini-embedding-001`, dim 768 |
+| `source_set_id` | populated for all three documents |
+| Live provider suite | **8 passed** — both models stream, both emit the exact sentinel |
+
+End-to-end retrieval against the real index:
+
+| question type | top_similarity | lexical | gate |
+|---|---|---|---|
+| answerable (metformin dose) | 0.7623 | yes | `ok` |
+| answerable (atenolol contraindications) | 0.7708 | yes | `ok` |
+| near-miss (paediatric atenolol) | 0.7355 | yes | `ok` → stage 2's job |
+| off-corpus medical (ibuprofen) | 0.6212 | yes | `off_domain` |
+| off-domain (capital of France) | 0.4813 | no | `off_domain` |
+
+Five questions is an anecdote, not a sweep — τ stays provisional until TICKET-8 measures it over the 40-question
+set. But the distribution is encouragingly close in shape to the local build's under `nomic-embed-text`, and the
+near-miss landing between the answerable and off-corpus bands is exactly the middle band the two-stage gate exists for.
 
 ## Deviations from the plan
 
@@ -97,30 +121,44 @@ Two consequences are recorded in `docs/ARCHITECTURE.md` §6: this profile skips 
 Worth reporting upstream to the local build. The fix there is a WinAnsi or CID font encoding, and it would
 move their published eval numbers.
 
+**The live run found two production bugs that no fake-driven test could have.**
+
+*The failover secondary was dead.* `gemini-2.0-flash` returned 404 "no longer available". The replacement I
+picked, `gemini-2.5-flash`, returned 404 "no longer available **to new users**" — listed by the models API,
+which reports availability generally rather than per-key entitlement. Two pinned defaults retired inside one
+session, which flipped the pinning argument: ADR-004 exists to survive provider change *without touching code*,
+and a pinned model that retires requires exactly that. The secondary is now `gemini-flash-latest`, with the
+`live` sentinel test as the guard against the alias drifting somewhere that behaves differently.
+
+*An invalid API key did not fail over.* TICKET-3 classified every non-429 4xx as a bad request, reasoning that
+"the secondary would reject it identically". True of a malformed request and false of a credential — the
+secondary is a different vendor holding a different key. So a revoked key raised `ProviderProtocolError` and
+skipped the fallback, against **PRD success criterion 4**, which names this case outright. 401 and 403 now map
+to `ProviderUnavailable` in both adapters, pinned by parametrised tests. The fake tests could not have caught
+it: they validated my classification against itself.
+
+After the fix, observed live: `primary healthy → served_by=llama-3.3-70b-versatile`; `primary key revoked →
+served_by=gemini-flash-latest`, same answer. Criterion 4 demonstrated rather than asserted.
+
 **Nothing else needed a second attempt.** The 21 integration tests passed on their first run, including the
 anchor check that the plan flagged as the likely off-by-one.
 
 ## Outstanding
 
-**Task 7 / AC #6 — the real ingest against Gemini.** You chose this explicitly (D3), so I have not silently
-substituted the fake-backed run for it. `GEMINI_API_KEY` is set neither in the shell nor in `.env`.
-
-To finish it, put the key in `.env` (already gitignored) and say so:
-
-```bash
-echo 'GEMINI_API_KEY=your-key-here' >> .env
-```
-
-Then the remaining work is one command plus verification — real 768-dim unit-norm vectors, a manifest naming
-`gemini-embedding-001`, and a live `retrieve()` against the real index. A local pgvector container is already
-running on port 55432 with the fake-embedded corpus in it, ready to be truncated and re-ingested.
-
-If you would rather not spend the quota, say so and I will mark AC #6 as deliberately deferred to TICKET-10,
-where the corpus has to be ingested into Neon anyway.
+None.
 
 ## Ready for the next step
 
-Work committed. CI needs a push.
+All work committed. CI green.
 
-Next: finish Task 7, then `piv-create-pr`. TICKET-5 (API shell) unblocks either way — it needs the manifest
-and a populated index, both of which exist now under the fake profile.
+Next: `piv-create-pr`. TICKET-5 (API shell) unblocks — it has a real manifest to check at startup and a real
+index to serve. TICKET-8 has real vectors to sweep τ against.
+
+**Two follow-ups worth tracking**, both surfaced by the live run rather than by any test:
+
+1. **ADR-004 action item 4 (TICKET-6's scheduled health check) is now evidence-backed, not precautionary.**
+   The secondary generator was dead — a pinned `gemini-2.0-flash` that had been retired — and nothing would
+   have discovered it until the failover was actually needed. The ADR anticipated this: "if the secondary is
+   never exercised in ninety days, test it deliberately rather than assuming it works."
+2. **Nothing loads `.env` automatically.** `load_config` reads `os.environ` only, so the documented commands
+   need the values exported. Worth either a loader or a clearer README line before TICKET-10.

@@ -24,6 +24,20 @@ from rag_core.errors import ProviderProtocolError, ProviderUnavailable
 
 from ._client import LazyClient
 
+# Auth and entitlement failures are PROVIDER-SPECIFIC, so they fail over.
+#
+# The first version of this classified every non-429 4xx as a bad request, on
+# the reasoning that "the secondary would reject it identically". That is true
+# of a malformed request and false of a credential: the secondary is a
+# different vendor holding a different key. A revoked, rotated or
+# quota-suspended key is exactly what the fallback chain exists for, and PRD
+# success criterion 4 states it outright — "killing the primary generation
+# provider's key produces a working answer from the fallback".
+#
+# Found by revoking a real key, not by a fake: the fake tests validated the
+# classification against itself.
+_AUTH_STATUSES = (401, 403)
+
 
 def _as_provider_error(exc: GroqError) -> Exception:
     """Map an SDK error into this codebase's error family.
@@ -38,7 +52,7 @@ def _as_provider_error(exc: GroqError) -> Exception:
         return ProviderUnavailable(f"groq unavailable: {exc}")
     if isinstance(exc, APIStatusError):
         status = getattr(exc, "status_code", None)
-        if status is not None and status >= 500:
+        if status is not None and (status >= 500 or status in _AUTH_STATUSES):
             return ProviderUnavailable(f"groq unavailable ({status}): {exc}")
         return ProviderProtocolError(f"groq rejected the request ({status}): {exc}")
     # Every other GroqError is transport-shaped (timeouts, response validation).
