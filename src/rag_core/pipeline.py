@@ -12,7 +12,7 @@ changed, all of them consequences of both legs now living in one store
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .config import RagConfig
 from .contracts import Chunk, to_context_chunk
@@ -26,6 +26,15 @@ from .prompts import ContextChunk
 class RetrievalResult:
     decision: GateDecision
     chunks: list[ContextChunk]
+    # The fused scores of the delivered chunks, in rank order. Surfaced because
+    # ARCHITECTURE.md §3 lists them in the telemetry strip and nothing outside
+    # this module can produce them — the shell never sees the ranked lists.
+    #
+    # They will look nearly constant, and that is the point rather than a bug:
+    # ADR-003's whole argument is that RRF discards magnitude, so the top-1
+    # score is 2/(60+1) whenever both retrievers agree on first place. Shown
+    # beside top_similarity, that is the ADR made visible. Do not normalise it.
+    fused_scores: list[float] = field(default_factory=list)
 
 
 def _hydrate(top_ids: list[str], found: dict[str, Chunk]) -> list[ContextChunk]:
@@ -91,7 +100,9 @@ async def retrieve(
     lexical_ids = [hit.item.id for hit in lexical_hits]
 
     fused = reciprocal_rank_fusion([dense_ids, lexical_ids], k=cfg.retrieval.rrf_k)
-    top_ids = [hit.chunk_id for hit in fused[: cfg.retrieval.top_k]]
+    delivered = fused[: cfg.retrieval.top_k]
+    top_ids = [hit.chunk_id for hit in delivered]
+    fused_scores = [hit.score for hit in delivered]
 
     # Recorded for the eval sweep; the gate itself never reads this (pinned by
     # test_mean_similarity_does_not_affect_the_decision in
@@ -127,9 +138,9 @@ async def retrieve(
     decision = evaluate_gate(signals, cfg.gate)
 
     if not decision.proceed:
-        return RetrievalResult(decision, [])
+        return RetrievalResult(decision, [], [])
 
     found: dict[str, Chunk] = {}
     for hit in (*dense_hits, *lexical_hits):
         found[hit.item.id] = hit.item
-    return RetrievalResult(decision, _hydrate(top_ids, found))
+    return RetrievalResult(decision, _hydrate(top_ids, found), fused_scores)

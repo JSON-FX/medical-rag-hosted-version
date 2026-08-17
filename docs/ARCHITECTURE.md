@@ -48,6 +48,21 @@ Visual walkthrough of the request path: [`medical-rag-system-flow.html`](./medic
 
 **API shell** — owns transport only. Request validation, NDJSON framing, rate limiting, telemetry assembly, error mapping. If a behaviour would be identical over gRPC, it belongs in `rag_core`, not here.
 
+The frame sequence, and why each position is what it is:
+
+```
+meta     after retrieval — gate decision, both gate conditions, retrieval latency, fused scores
+token*   the answer, or the server-authored decline copy
+sources  only after BOTH gates have cleared
+done     time to first token, token count, serving provider, truncated flag
+```
+
+**Telemetry splits across `meta` and `done`** rather than arriving all at once. `meta` carries what is known before generation; `done` carries what is only knowable after. That is for the refusal path: PRD §7 budgets a refusal at under 800ms "fast and visibly so", and a refusal is the outcome readers assume is a bug — so the strip must explain itself *before* the decline text renders, not after. The reader sees why before what.
+
+**`sources` comes immediately before the first token**, never at stage-1 gate-pass. Emitting it earlier would show citations for an answer the model then declines to give.
+
+**Retrieval runs inside the streaming generator.** Outside it, a provider failure happens before headers are committed and the framework can still return a clean status code — which sounds better, and means the same failure behaves differently depending on when it occurs. Inside, every failure after the response begins is an `error` frame followed by `done`, and the client has exactly one shape to handle.
+
 The transport is **NDJSON**, one JSON object per line, not SSE. An earlier draft of this document said SSE. The local build ships `application/x-ndjson` with a tested browser-side parser, and reusing that frame vocabulary makes the frontend a re-skin rather than a rewrite. `json.dumps` escapes embedded newlines, so answer text containing line breaks cannot split a frame. The frame types are `meta`, `token`, `sources`, `error`, `done`, defined in `rag_core/contracts.py` so the shell and the frontend can be built against one definition.
 
 **Frontend** — a single question box, a streaming answer pane with inline citations, and a telemetry strip showing gate decision, fused scores, retrieval latency, time to first token, and which provider served the request. The telemetry strip is a product feature, not debug output; it is the part that shows engineering rather than describing it.
@@ -191,7 +206,7 @@ This document originally described only stage 1. Stage 2 is not an implementatio
 | Primary generator rate-limited or errors | Retry once, then fall to secondary; response reports which served it |
 | All generators unavailable | Explicit service message; never an ungrounded answer |
 | Embedding provider down | Fail the request; there is no meaningful degraded retrieval without a query vector |
-| Manifest mismatch at startup | Refuse to serve, log loudly |
+| Manifest mismatch at startup | Refuse to serve, log loudly. The service stays up and returns **503 naming both disagreeing model ids** on every query, with `/api/health` saying the same. Refusing every request is refusing to serve; failing to start is not louder on serverless, it is opaque — every invocation returns a platform 500 with the reason buried in logs. |
 | Per-IP rate limit exceeded | 429 with a plain-language message and retry hint |
 
 The fallback chain is a hard requirement rather than polish, because free tiers change quota without notice and a single-provider demo is a demo with an expiry date nobody told you about.

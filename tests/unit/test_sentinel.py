@@ -1,4 +1,3 @@
-
 from rag_core.prompts import SENTINEL
 from rag_core.sentinel import filter_sentinel
 
@@ -70,13 +69,14 @@ def test_buffered_prefix_is_emitted_exactly_once():
     joined = "".join(text for _, text in events(deltas))
     assert joined == "".join(deltas)
 
+
 def test_preamble_split_across_deltas_near_the_buffer_boundary_still_declines():
     """Regression: the decision once fired at 40 chars while a tolerated
     preamble plus the sentinel needs 44, locking in a false negative and
     leaking the raw sentinel to the user."""
     for preamble_length in (20, 21, 22, 23, 24):
         preamble = "A" * preamble_length
-        stream = list(preamble + SENTINEL)          # one character per delta
+        stream = list(preamble + SENTINEL)  # one character per delta
         assert events(stream) == [("declined", None)], (
             f"preamble of {preamble_length} chars leaked the sentinel"
         )
