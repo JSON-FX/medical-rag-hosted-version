@@ -1,3 +1,5 @@
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from rag_adapters.profile import Profile, build_profile, register_profile
@@ -16,14 +18,66 @@ def test_the_fake_profile_resolves_all_four_adapters():
 
 def test_an_unknown_profile_raises_and_names_the_valid_options():
     """A silent fallback to fakes would let a real deployment answer
-    confidently from nothing."""
-    with pytest.raises(ValueError, match="unknown profile 'hosted'"):
-        build_profile(load_config(env={"RAG_PROFILE": "hosted"}))
+    confidently from nothing.
+
+    Uses a name that is not and will not be registered — 'hosted' was the
+    original placeholder here and became real in TICKET-2, which would have
+    made this test pass for entirely the wrong reason."""
+    with pytest.raises(ValueError, match="unknown profile 'sqlite'"):
+        build_profile(load_config(env={"RAG_PROFILE": "sqlite"}))
 
 
 def test_the_error_lists_what_is_actually_registered():
     with pytest.raises(ValueError, match="fake"):
         build_profile(load_config(env={"RAG_PROFILE": "nonsense"}))
+
+
+def test_building_the_hosted_profile_does_not_connect():
+    """Construction is synchronous and the pool needs a running event loop, so
+    building must succeed against a database that does not exist. The failure
+    belongs in open(), where it can be reported."""
+    profile = build_profile(
+        load_config(
+            env={
+                "RAG_PROFILE": "hosted",
+                "DATABASE_URL": "postgresql://nobody@203.0.113.1:5432/nothing",
+            }
+        )
+    )
+    assert profile.name == "hosted"
+    assert profile.dense is not None
+    assert profile.lexical is not None
+
+
+async def test_using_the_hosted_stores_before_open_says_so():
+    """The alternative is an AttributeError on None deep inside a query, which
+    tells you nothing about the lifecycle step you actually missed."""
+    profile = build_profile(load_config(env={"RAG_PROFILE": "hosted"}))
+    with pytest.raises(RuntimeError, match="not open"):
+        await profile.dense.count()
+
+
+async def test_the_fake_profile_opens_and_closes_as_no_ops():
+    profile = build_profile(load_config(env={"RAG_PROFILE": "fake"}))
+    assert profile.resources == ()
+    await profile.open()
+    await profile.close()
+
+
+async def test_close_is_safe_without_open_and_twice_over():
+    """A shell that fails during startup still runs its shutdown path, and a
+    close that raises there buries the original error."""
+    profile = build_profile(
+        load_config(env={"RAG_PROFILE": "hosted", "DATABASE_URL": "postgresql://x@127.0.0.1/y"})
+    )
+    await profile.close()
+    await profile.close()
+
+
+def test_the_profile_container_is_still_frozen():
+    profile = build_profile(load_config(env={}))
+    with pytest.raises(FrozenInstanceError):
+        profile.name = "mutated"
 
 
 def test_the_embedder_dimension_follows_the_configured_dimension():

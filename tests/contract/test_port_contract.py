@@ -3,70 +3,41 @@
 ARCHITECTURE.md §11: "every adapter runs the same suite against its port, so
 local and hosted are held to one specification."
 
-Only the fakes are registered in this ticket. TICKET-2 (Postgres) and TICKET-3
-(Gemini, Groq) each add a builder to the relevant list below — one line — and
-inherit the whole suite. If either has to restructure this file, the seam was
-built wrong.
+TICKET-1 wrote here that a new adapter would be "one line in the parametrisation,
+and if TICKET-2 has to restructure this file, the seam was built wrong." The seam
+was built wrong, and TICKET-2 rebuilt it. The registry held classes and the tests
+called `builder()` / `builder(CORPUS)`, which works only for a store with no
+dependencies and no lifecycle, and which seeded through a constructor — skipping
+the write path entirely.
+
+Stores now come from the `stores` fixture in conftest.py (a `StorePair` per
+profile, with a profile-specific `seed`), so a new store adapter is a fixture
+plus one entry in `STORE_PAIRS`. Embedders and generators kept the original
+shape, because they genuinely have no setup. Every assertion below is the one
+TICKET-1 wrote; only how a store is obtained and populated changed.
 
 The score-direction tests are the highest-value assertions here. They are the
 only thing standing between a helpfully-normalising adapter and a gate whose
 thresholds have quietly stopped meaning anything (ADR-003).
 """
 
+from datetime import UTC, datetime
+
 import pytest
+from stores import CORPUS, STORE_PAIRS, embedded
 
-from rag_adapters.fakes import (
-    DIMENSIONS,
-    FakeDenseStore,
-    FakeEmbedder,
-    FakeGenerator,
-    FakeLexicalStore,
-)
-from rag_core.contracts import Chunk, EmbeddedChunk
+from rag_adapters.fakes import DIMENSIONS, FakeEmbedder, FakeGenerator
+from rag_core.contracts import IndexManifest
 
-CORPUS = [
-    Chunk(
-        id="metformin_0",
-        document_id="metformin",
-        ordinal=0,
-        anchor="1",
-        content="Metformin adult starting dose is 500 mg twice daily with meals.",
-        document_title="Metformin",
-    ),
-    Chunk(
-        id="metformin_1",
-        document_id="metformin",
-        ordinal=1,
-        anchor="2",
-        content="Metformin is contraindicated in severe renal impairment.",
-        document_title="Metformin",
-    ),
-    Chunk(
-        id="atenolol_0",
-        document_id="atenolol",
-        ordinal=0,
-        anchor="1",
-        content="Atenolol initial dose for hypertension is 50 mg once daily.",
-        document_title="Atenolol",
-    ),
-]
-
-
-# --- registries: add one entry per new adapter ---------------------------
+# --- registries ----------------------------------------------------------
+#
+# Embedders and generators are still constructed directly: they have no
+# lifecycle and no shared state, so a class is a fine builder. TICKET-3 adds
+# its adapters here. The STORES registry lives in conftest.py, because a store
+# needs setup, teardown and a profile-specific way to be seeded.
 
 EMBEDDERS = [pytest.param(FakeEmbedder, id="fake")]
-DENSE_STORES = [pytest.param(FakeDenseStore, id="fake")]
-LEXICAL_STORES = [pytest.param(FakeLexicalStore, id="fake")]
 GENERATORS = [pytest.param(FakeGenerator, id="fake")]
-
-
-async def _populated_dense(builder, embedder):
-    store = builder()
-    embeddings = await embedder.embed_documents([c.content for c in CORPUS])
-    await store.upsert(
-        [EmbeddedChunk(chunk=c, embedding=e) for c, e in zip(CORPUS, embeddings, strict=True)]
-    )
-    return store
 
 
 # --- EmbeddingProvider ---------------------------------------------------
@@ -107,136 +78,207 @@ async def test_embedder_reports_a_model_id(builder):
 
 
 # --- DenseStore ----------------------------------------------------------
+#
+# Every assertion below is TICKET-1's, unchanged. Only how a store is obtained
+# and populated differs: `stores` resolves to a profile's pair of legs, and
+# `seed()` writes through that profile's own methods rather than a constructor.
 
 
-@pytest.mark.parametrize("builder", DENSE_STORES)
-async def test_dense_results_are_ordered_by_ascending_distance(builder):
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_dense_results_are_ordered_by_ascending_distance(stores):
     """Cosine DISTANCE, closest first. An adapter that returns similarity
     instead inverts every gate threshold without raising anything."""
+    await stores.seed(await embedded(CORPUS))
     embedder = FakeEmbedder()
-    store = await _populated_dense(builder, embedder)
-    hits = await store.search(await embedder.embed_query("metformin"), 3)
+    hits = await stores.dense.search(await embedder.embed_query("metformin"), 3)
     scores = [h.score for h in hits]
     assert scores == sorted(scores), f"expected ascending distance, got {scores}"
 
 
-@pytest.mark.parametrize("builder", DENSE_STORES)
-async def test_dense_nearest_result_is_the_semantically_closest(builder):
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_dense_nearest_result_is_the_semantically_closest(stores):
+    await stores.seed(await embedded(CORPUS))
     embedder = FakeEmbedder()
-    store = await _populated_dense(builder, embedder)
-    hits = await store.search(await embedder.embed_query("atenolol"), 1)
+    hits = await stores.dense.search(await embedder.embed_query("atenolol"), 1)
     assert hits[0].item.id == "atenolol_0"
 
 
-@pytest.mark.parametrize("builder", DENSE_STORES)
-async def test_dense_k_larger_than_the_corpus_returns_fewer_rows_not_an_error(builder):
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_dense_k_larger_than_the_corpus_returns_fewer_rows_not_an_error(stores):
+    await stores.seed(await embedded(CORPUS))
     embedder = FakeEmbedder()
-    store = await _populated_dense(builder, embedder)
-    assert len(await store.search(await embedder.embed_query("metformin"), 500)) == len(CORPUS)
+    hits = await stores.dense.search(await embedder.embed_query("metformin"), 500)
+    assert len(hits) == len(CORPUS)
 
 
-@pytest.mark.parametrize("builder", DENSE_STORES)
-async def test_dense_non_positive_k_returns_empty(builder):
-    embedder = FakeEmbedder()
-    store = await _populated_dense(builder, embedder)
-    vector = await embedder.embed_query("metformin")
-    assert await store.search(vector, 0) == []
-    assert await store.search(vector, -1) == []
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_dense_non_positive_k_returns_empty(stores):
+    await stores.seed(await embedded(CORPUS))
+    vector = await FakeEmbedder().embed_query("metformin")
+    assert await stores.dense.search(vector, 0) == []
+    assert await stores.dense.search(vector, -1) == []
 
 
-@pytest.mark.parametrize("builder", DENSE_STORES)
-async def test_dense_search_on_an_empty_store_returns_empty(builder):
-    assert await builder().search([0.0] * DIMENSIONS, 5) == []
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_dense_search_on_an_empty_store_returns_empty(stores):
+    assert await stores.dense.search([0.0] * DIMENSIONS, 5) == []
 
 
-@pytest.mark.parametrize("builder", DENSE_STORES)
-async def test_dense_upsert_is_idempotent_on_chunk_id(builder):
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_dense_upsert_is_idempotent_on_chunk_id(stores):
     """Re-running ingestion must converge, not accumulate (PRD F4)."""
-    embedder = FakeEmbedder()
-    store = await _populated_dense(builder, embedder)
-    before = await store.count()
-    embeddings = await embedder.embed_documents([c.content for c in CORPUS])
-    await store.upsert(
-        [EmbeddedChunk(chunk=c, embedding=e) for c, e in zip(CORPUS, embeddings, strict=True)]
-    )
-    assert await store.count() == before
+    chunks = await embedded(CORPUS)
+    await stores.seed(chunks)
+    before = await stores.dense.count()
+    await stores.seed(chunks)
+    assert await stores.dense.count() == before
 
 
-@pytest.mark.parametrize("builder", DENSE_STORES)
-async def test_dense_count_reflects_what_was_stored(builder):
-    embedder = FakeEmbedder()
-    assert await builder().count() == 0
-    store = await _populated_dense(builder, embedder)
-    assert await store.count() == len(CORPUS)
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_dense_upsert_updates_content_in_place(stores):
+    """An edit converges rather than adding a second row for the same id."""
+    from dataclasses import replace
+
+    chunks = await embedded(CORPUS)
+    await stores.seed(chunks)
+    edited = [replace(chunks[0], chunk=replace(chunks[0].chunk, content="Revised dosing text."))]
+    await stores.seed(edited)
+    assert await stores.dense.count() == len(CORPUS)
+    hits = await stores.dense.search(await FakeEmbedder().embed_query("metformin"), 5)
+    contents = {h.item.id: h.item.content for h in hits}
+    assert contents["metformin_0"] == "Revised dosing text."
 
 
-@pytest.mark.parametrize("builder", DENSE_STORES)
-async def test_dense_returns_full_chunks_not_bare_ids(builder):
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_dense_count_reflects_what_was_stored(stores):
+    assert await stores.dense.count() == 0
+    await stores.seed(await embedded(CORPUS))
+    assert await stores.dense.count() == len(CORPUS)
+
+
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_dense_returns_full_chunks_not_bare_ids(stores):
     """Hydration is a dict lookup over what the legs returned, so a store that
     omits content or title breaks citation rather than retrieval — and it
     breaks it silently."""
-    embedder = FakeEmbedder()
-    store = await _populated_dense(builder, embedder)
-    hit = (await store.search(await embedder.embed_query("metformin"), 1))[0]
+    await stores.seed(await embedded(CORPUS))
+    hit = (await stores.dense.search(await FakeEmbedder().embed_query("metformin"), 1))[0]
     assert hit.item.content
     assert hit.item.document_title
     assert hit.item.anchor
 
 
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_dense_upsert_of_nothing_is_harmless(stores):
+    await stores.dense.upsert([])
+    assert await stores.dense.count() == 0
+
+
+# --- the manifest --------------------------------------------------------
+
+
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_manifest_is_absent_until_written(stores):
+    """Absent must be distinguishable from a manifest whose fields are empty.
+    The startup check maps absent to refuse-to-serve, and a zero-valued
+    manifest would instead produce a confusing mismatch message."""
+    assert await stores.dense.read_manifest() is None
+
+
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_manifest_round_trips(stores):
+    written = IndexManifest(
+        embedding_model_id="fake-embed-001",
+        dimension=DIMENSIONS,
+        ingested_at=datetime(2026, 8, 17, 12, 30, tzinfo=UTC),
+    )
+    await stores.dense.write_manifest(written)
+    read = await stores.dense.read_manifest()
+    assert read is not None
+    assert read.embedding_model_id == written.embedding_model_id
+    assert read.dimension == written.dimension
+    assert read.ingested_at == written.ingested_at
+
+
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_writing_the_manifest_twice_leaves_one_manifest(stores):
+    first = IndexManifest("model-a", 768, datetime(2026, 8, 1, tzinfo=UTC))
+    second = IndexManifest("model-b", 384, datetime(2026, 8, 2, tzinfo=UTC))
+    await stores.dense.write_manifest(first)
+    await stores.dense.write_manifest(second)
+    read = await stores.dense.read_manifest()
+    assert read is not None
+    assert read.embedding_model_id == "model-b"
+    assert read.dimension == 384
+
+
 # --- LexicalStore --------------------------------------------------------
 
 
-@pytest.mark.parametrize("builder", LEXICAL_STORES)
-async def test_lexical_results_are_ordered_by_descending_rank(builder):
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_lexical_results_are_ordered_by_descending_rank(stores):
     """Opposite direction to the dense leg, because the underlying measures run
     in opposite directions. Fusion reads position only, but each list must be
     ordered correctly before RRF sees it."""
-    store = builder(CORPUS)
-    hits = await store.search("metformin dose contraindicated", 5)
+    await stores.seed(await embedded(CORPUS))
+    hits = await stores.lexical.search("metformin dose contraindicated", 5)
     scores = [h.score for h in hits]
     assert scores == sorted(scores, reverse=True), f"expected descending rank, got {scores}"
 
 
-@pytest.mark.parametrize("builder", LEXICAL_STORES)
-async def test_lexical_finds_an_exact_terminology_match(builder):
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_lexical_finds_an_exact_terminology_match(stores):
     """Exact drug and dose matching is what the lexical leg is for — the case
     where cosine similarity is mediocre but the term is right there."""
-    hits = await builder(CORPUS).search("hypertension", 5)
+    await stores.seed(await embedded(CORPUS))
+    hits = await stores.lexical.search("hypertension", 5)
     assert "atenolol_0" in [h.item.id for h in hits]
 
 
-@pytest.mark.parametrize("builder", LEXICAL_STORES)
-async def test_lexical_query_that_sanitises_to_nothing_returns_empty_not_an_error(builder):
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_lexical_query_that_sanitises_to_nothing_returns_empty_not_an_error(stores):
     """A raw question full of punctuation must not raise. In the local build
     this exact class of input produced `fts5: syntax error` on questions as
-    ordinary as "What's the max dose?"."""
-    assert await builder(CORPUS).search("?!!  ...", 5) == []
-    assert await builder(CORPUS).search("", 5) == []
+    ordinary as "What's the max dose?"; on Postgres the equivalent is
+    to_tsquery raising on an empty string."""
+    await stores.seed(await embedded(CORPUS))
+    assert await stores.lexical.search("?!!  ...", 5) == []
+    assert await stores.lexical.search("", 5) == []
+    assert await stores.lexical.search("what is it?", 5) == []
 
 
-@pytest.mark.parametrize("builder", LEXICAL_STORES)
-async def test_lexical_non_positive_k_returns_empty(builder):
-    assert await builder(CORPUS).search("metformin", 0) == []
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_lexical_non_positive_k_returns_empty(stores):
+    await stores.seed(await embedded(CORPUS))
+    assert await stores.lexical.search("metformin", 0) == []
 
 
-@pytest.mark.parametrize("builder", LEXICAL_STORES)
-async def test_lexical_search_on_an_empty_store_returns_empty(builder):
-    assert await builder().search("metformin", 5) == []
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_lexical_search_on_an_empty_store_returns_empty(stores):
+    assert await stores.lexical.search("metformin", 5) == []
 
 
-@pytest.mark.parametrize("builder", LEXICAL_STORES)
-async def test_lexical_index_is_idempotent_on_chunk_id(builder):
-    store = builder(CORPUS)
-    await store.index(list(CORPUS))
-    hits = await store.search("metformin", 50)
-    assert len({h.item.id for h in hits}) == len(hits), "duplicate ids after re-indexing"
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_lexical_never_returns_duplicate_ids(stores):
+    await stores.seed(await embedded(CORPUS))
+    hits = await stores.lexical.search("metformin dose", 50)
+    assert len({h.item.id for h in hits}) == len(hits), "duplicate ids in lexical results"
 
 
-@pytest.mark.parametrize("builder", LEXICAL_STORES)
-async def test_lexical_returns_full_chunks_not_bare_ids(builder):
-    hit = (await builder(CORPUS).search("metformin", 1))[0]
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_lexical_returns_full_chunks_not_bare_ids(stores):
+    await stores.seed(await embedded(CORPUS))
+    hit = (await stores.lexical.search("metformin", 1))[0]
     assert hit.item.content
     assert hit.item.document_title
+
+
+@pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
+async def test_lexical_only_returns_chunks_that_actually_match(stores):
+    """A term appearing in no chunk yields nothing, rather than everything at
+    rank zero — which would leave the gate's lexical_support permanently True."""
+    await stores.seed(await embedded(CORPUS))
+    assert await stores.lexical.search("cardiomyopathy", 5) == []
 
 
 # --- GenerationProvider --------------------------------------------------

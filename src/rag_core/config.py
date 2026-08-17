@@ -36,6 +36,19 @@ class GenerationConfig:
 
 
 @dataclass(frozen=True)
+class DatabaseConfig:
+    # Empty by default so the fake profile needs no database at all. The hosted
+    # profile fails at open() rather than at import, which is what lets a
+    # profile be built and inspected without a reachable server.
+    dsn: str = ""
+    # Small minimum: serverless invocations are short-lived, and a large
+    # minimum opens connections the invocation never uses and the provider
+    # still counts against the quota.
+    pool_min_size: int = 1
+    pool_max_size: int = 10
+
+
+@dataclass(frozen=True)
 class ChunkConfig:
     size: int = 1000
     overlap: int = 150
@@ -68,6 +81,7 @@ class GateConfig:
 @dataclass(frozen=True)
 class RagConfig:
     profile: str = "fake"
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
@@ -90,6 +104,11 @@ def load_config(env: Mapping[str, str] | None = None) -> RagConfig:
 
     return RagConfig(
         profile=_s("RAG_PROFILE", "fake"),
+        database=DatabaseConfig(
+            dsn=_s("DATABASE_URL", ""),
+            pool_min_size=_i("DB_POOL_MIN", 1),
+            pool_max_size=_i("DB_POOL_MAX", 10),
+        ),
         embedding=EmbeddingConfig(
             model_id=_s("EMBED_MODEL", "REPLACE_ME_AFTER_SPIKE"),
             dimension=_i("EMBED_DIMENSIONS", 768),

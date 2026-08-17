@@ -48,6 +48,18 @@ uv run mypy
 No network, no database and no API key is required. That is a deliberate property of `rag_core`, not a
 convenience — the whole pipeline is testable against fakes in milliseconds.
 
+The store adapters are held to the same contract suite as the fakes, which does need a database. Those
+tests are marked `postgres` and deselected by default:
+
+```bash
+docker run -d --name medrag-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 pgvector/pgvector:pg17
+export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/postgres"
+uv run python db/migrate.py
+uv run pytest -m postgres
+```
+
+See [`db/README.md`](db/README.md).
+
 ## On parity with the local build
 
 The pure modules — `chunking`, `fusion`, `gate`, `prompts`, `sentinel` — are ported from the local

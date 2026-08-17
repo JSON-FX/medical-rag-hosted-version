@@ -11,12 +11,23 @@ requires-python = ">=3.12"
 # as optional dependencies — never here.
 dependencies = []
 
+# Adapters bring their own drivers. Keeping the base empty is a stronger claim
+# than a comment: `pip install medical-rag-hosted` gets you rag_core and
+# nothing else, and tests/unit/test_core_purity.py asserts it stays that way.
+[project.optional-dependencies]
+postgres = [
+    "asyncpg>=0.30",
+    "pgvector>=0.3",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
     "mypy>=1.11",
+    "asyncpg-stubs>=0.30",
+    "medical-rag-hosted[postgres]",
 ]
 
 [build-system]
@@ -34,6 +45,12 @@ python_files = "test_*.py"
 # run, which trains you to ignore warnings.
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# Mirrors the local build's `markers = ollama` / `addopts = -m "not ollama"`.
+# `uv run pytest` must stay green on a machine with no database at all; CI runs
+# `uv run pytest -m postgres` as a second step against a service container.
+# A command-line -m REPLACES this one rather than merging with it.
+markers = ["postgres: requires a live Postgres with pgvector (deselected by default)"]
+addopts = '-m "not postgres"'
 
 [tool.ruff]
 # Prose is not ours to reformat. ruff formats Python code blocks inside

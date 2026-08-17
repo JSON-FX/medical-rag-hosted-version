@@ -10,6 +10,24 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+
+    services:
+      # Postgres with pgvector, for the store contract tests. Free, fast, and
+      # no credentials — the alternative was a Neon branch per run, which
+      # couples the suite to an account and adds network flakiness to a check
+      # that runs on every push.
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -30,5 +48,19 @@ jobs:
       - name: Type check
         run: uv run mypy
 
-      - name: Tests
+      # Two steps, deliberately. The first proves the default suite stays green
+      # on a machine with no database at all — which is what keeps rag_core
+      # testable in milliseconds with nothing installed.
+      - name: Tests (no database)
         run: uv run pytest -v
+
+      - name: Migrate
+        run: uv run python db/migrate.py
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+
+      # A command-line -m REPLACES the one in addopts rather than merging.
+      - name: Tests (Postgres)
+        run: uv run pytest -m postgres -v
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
