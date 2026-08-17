@@ -55,7 +55,9 @@ def _as_provider_error(exc: genai_errors.APIError) -> Exception:
     range is a bad request that a second attempt cannot fix.
     """
     code = getattr(exc, "code", None)
-    if isinstance(exc, genai_errors.ServerError) or code == 429:
+    # 401/403 fail over for the same reason as in groq.py: a credential is
+    # provider-specific, and the secondary holds a different one.
+    if isinstance(exc, genai_errors.ServerError) or code in (429, 401, 403):
         return ProviderUnavailable(f"gemini unavailable ({code}): {exc}")
     return ProviderProtocolError(f"gemini rejected the request ({code}): {exc}")
 

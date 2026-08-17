@@ -192,6 +192,15 @@ async def test_a_bad_request_is_not_retried():
     assert len(attempts) == 1
 
 
+@pytest.mark.parametrize("code", [401, 403])
+async def test_an_auth_failure_is_treated_as_unavailable_not_malformed(code):
+    """Same reasoning as the Groq adapter: a credential is provider-specific,
+    so a revoked key must reach the fallback (PRD success criterion 4)."""
+    client = FakeEmbedClient(lambda contents, **_: (_ for _ in ()).throw(api_error(code)))
+    with pytest.raises(ProviderUnavailable):
+        await GeminiEmbedder(CFG, client=client, sleep=no_sleep).embed_query("q")
+
+
 async def test_sdk_errors_never_escape_as_themselves():
     """A caller catching ProviderError must not have to also catch the SDK's
     exception tree — the same escape the local build closed in ollama.py."""

@@ -109,6 +109,23 @@ async def test_a_server_error_becomes_provider_unavailable():
         [t async for t in stream]
 
 
+@pytest.mark.parametrize("status", [401, 403])
+async def test_an_auth_failure_fails_over_rather_than_giving_up(status):
+    """PRD success criterion 4: "killing the primary generation provider's key
+    produces a working answer from the fallback".
+
+    An earlier version classified every non-429 4xx as a bad request, on the
+    reasoning that the secondary would reject it identically. True of a
+    malformed request, false of a credential — the secondary is a different
+    vendor holding a different key. Found by revoking a real key; the fake
+    tests had validated the classification against itself.
+    """
+    client = FakeGroqClient(raises=status_error(status))
+    stream = GroqGenerator(CFG, client=client).stream([{"role": "user", "content": "q"}])
+    with pytest.raises(ProviderUnavailable):
+        [t async for t in stream]
+
+
 async def test_a_bad_request_is_a_protocol_error_not_an_outage():
     """A 4xx that is not a rate limit fails identically on the secondary, so it
     must not be classified as something worth failing over for."""

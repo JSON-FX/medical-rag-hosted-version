@@ -128,7 +128,7 @@ create table index_manifest (
 
 ## 6. Ingestion path
 
-1. Parse source documents, preserving page structure.
+1. Assemble each document from its committed fixture text, paginated at ~1200 characters on word boundaries. **No PDF is involved** — see the note below.
 2. Chunk with the local build's page-aware recursive splitter, ported unchanged: **1000 characters with 150 characters of overlap, never spanning a page boundary**, splitting on `\n\n`, `\n`, `. `, then ` `. The effective maximum length is `size + overlap` — 1150 characters, roughly 300 tokens.
 3. Embed in batches sized to the provider's quota, with backoff.
 4. Upsert chunks with vectors and let the generated `tsvector` column populate itself.
@@ -136,7 +136,23 @@ create table index_manifest (
 
 An earlier draft specified ~800 tokens with 15% overlap and section-first splitting. That was replaced with the shipped chunker for two reasons: every measured number in the local build's evaluation was produced by this splitter, so changing it invalidates the baseline the parity claim rests on; and never spanning a page boundary is what gives every chunk an exact page number, which is what the schema's `anchor` column stores and what citations resolve to.
 
-Run offline. On free embedding quotas a full corpus pass may need to span more than one day, which is fine for a fixed corpus and is exactly why on-demand upload is out of scope.
+### Why there is no PDF round-trip
+
+The local build renders these same fixtures into a PDF and reads them back with `pypdf`, on the reasoning that it "exercises the page-aware chunker the way an uploaded document would". That round-trip is lossy, and measurably so: its writer escapes the characters that would corrupt the *file* (`\`, `(`, `)`) but emits the text as raw UTF-8 into a content stream declared `/Helvetica` with no encoding, so `pypdf` decodes those bytes as Latin-1.
+
+Measured across all three labels, **every one of the 28 non-ASCII characters corrupts**:
+
+| | source | after the round-trip | pages affected |
+|---|---|---|---|
+| amoxicillin | `β-lactamase` | `Î²-lactamase` | 7 of 13 |
+| atenolol | `Program's` | `Programâ€™s` | 4 of 15 |
+| metformin | `patient's` | `patientâ€™s` | 2 of 9 |
+
+So the local build embedded `Î²-lactamase`, indexed it, and a visitor asking about β-lactamase gets no lexical match at all. This profile ingests the text directly: lossless, and one dependency lighter. Pagination survives the PDF's removal because the page number is what a citation resolves to.
+
+**Consequence for TICKET-9.** The local retrieval baseline was measured over that corrupted text, so a hosted-vs-local comparison now has a third variable in it alongside pgvector and `ts_rank_cd`. The hosted corpus is *better*, not merely different, and that improvement is not attributable to the storage change. The evaluation write-up has to say so rather than bank it.
+
+Run offline. On free embedding quotas a full corpus pass may need to span more than one day, which is fine for a fixed corpus and is exactly why on-demand upload is out of scope. The job is resumable without a checkpoint file: `upsert` is idempotent on chunk id, so the rows already stored are the progress marker, and the manifest is written last so an interrupted run leaves an index the startup check will refuse to serve.
 
 ## 7. Query path
 
@@ -414,7 +430,13 @@ Two providers means two prompt behaviours to validate and two sets of quirks. Th
 1. [x] Implement failover on rate limit and error, with one retry before falling through — `rag_adapters/failover.py`. **Groq primary, Gemini secondary**: time-to-first-token is the NFR with a hard number and Groq is faster, and two vendors keeps the quota and outage domains genuinely independent.
 2. [~] Surface the active provider — `TokenStream.served_by` carries it per request. The response payload is TICKET-5's and the UI is TICKET-7's.
 3. [~] Validate the prompt against both models — a `live`-marked smoke test asserts both emit the exact sentinel on insufficient context. Validating across the **evaluation set** needs the harness and stays with TICKET-8.
-4. [ ] Health check that exercises the secondary path on a schedule (TICKET-6)
+4. [ ] Health check that exercises the secondary path on a schedule (TICKET-6) — **now evidence-backed rather than precautionary.** The first live exercise of the chain found the secondary was dead: `gemini-2.0-flash` had been retired, and nothing would have discovered it until the failover was actually needed. This ADR's own note anticipated it — "if the secondary is never exercised in ninety days, test it deliberately rather than assuming it works."
+
+### Two corrections from the first live run
+
+**The secondary is an alias, not a pin.** Two successive pinned defaults retired inside one session — `gemini-2.0-flash` ("no longer available") and then `gemini-2.5-flash` ("no longer available *to new users*", which the models-list API does not distinguish). Pinning was the first instinct; the evidence contradicted it, because this ADR exists to survive provider change *without touching code* and a retired pin requires exactly that. The secondary is now `gemini-flash-latest`. The cost — that the model underneath can move, when this ADR also requires prompt behaviour validated against both models — is covered by the `live`-marked sentinel test, which checks the refusal behaviour against whatever the alias currently resolves to.
+
+**Auth failures fail over.** The first implementation classified every non-429 4xx as a bad request, on the reasoning that the secondary would reject it identically. That is true of a malformed request and false of a credential: the secondary is a different vendor holding a different key. A revoked key therefore skipped the fallback entirely — against PRD success criterion 4, which names that exact scenario. 401 and 403 now map to provider-unavailable. Found by revoking a real key; the fake-driven tests had validated the classification against itself.
 
 ### Note on the failover boundary
 
