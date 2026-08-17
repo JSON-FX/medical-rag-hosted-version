@@ -9,7 +9,7 @@ Status: Draft · Owner: Jayson · Last updated: 17 Aug 2026
 
 A publicly reachable version of the Medical RAG system, answering clinical questions grounded in a corpus of public medical literature, with a confidence gate that refuses to answer when retrieval is weak.
 
-The existing system runs entirely on-device via Ollama. That is the right architecture for its stated use case and the wrong architecture for a link someone can click. This version keeps the retrieval pipeline byte-for-byte identical and swaps only the inference providers, so both deployments run from one codebase.
+The existing system runs entirely on-device via Ollama. That is the right architecture for its stated use case and the wrong architecture for a link someone can click. This version ports the retrieval pipeline unchanged and swaps only inference and storage. The two deployments live in separate repositories (ADR-001, amended), with the ported modules carrying their original test suites so the pipelines can be shown to still agree rather than assumed to.
 
 ## 2. Why this exists
 
@@ -34,7 +34,7 @@ A useful secondary outcome: a hosted deployment forces the retrieval stack onto 
 ### Goals
 
 - G1 — Public URL, no login, cold-start to first token under five seconds.
-- G2 — One codebase, two profiles, selected by environment variable. No forked logic.
+- G2 — **Restated.** *Originally: "One codebase, two profiles, selected by environment variable. No forked logic."* The hosted profile ships as its own repository (ADR-001, amended), so a single codebase is no longer what is being claimed. The claim is now: **the retrieval pipeline is a verbatim port carrying its own test suite, so behavioural divergence between the two profiles fails a test rather than going unnoticed.** Within this repository, adapter selection is still one environment variable resolved once at startup, with no conditional provider logic below it.
 - G3 — Retrieval quality equal to or better than the local build, measured on a fixed question set.
 - G4 — Runs at zero recurring cost on provider free tiers.
 - G5 — The refusal path is discoverable in under a minute by someone who was not told about it.
@@ -107,7 +107,7 @@ The build is done when all of these hold.
 2. The refusal path triggers on an out-of-corpus question and reads as deliberate, not broken.
 3. Retrieval scores on the fixed evaluation set are at or above the local baseline, with numbers published in the README.
 4. Killing the primary generation provider's key produces a working answer from the fallback, with the swap visible in the telemetry.
-5. Both profiles run from the same `rag_core` package with no branching outside the adapter layer.
+5. **Restated.** *Originally: "Both profiles run from the same `rag_core` package with no branching outside the adapter layer."* Unsatisfiable across two repositories. It becomes two checkable things: (a) the pure modules' test suites, ported unedited, pass here with the same assertions and the same numbers — verified by diffing the test files against the local build's; and (b) within this repository there is no branching on provider outside the adapter layer, enforced by `tests/unit/test_core_purity.py`.
 6. Thirty days after deploy, the demo still works and has cost nothing.
 
 Criterion 6 is the one most likely to fail. Trial credits that expire are disqualifying regardless of how cheap the provider is.

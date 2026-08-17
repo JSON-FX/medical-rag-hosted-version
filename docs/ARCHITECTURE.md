@@ -19,7 +19,7 @@ The forcing question for the whole design: **what is genuinely different between
 ┌───────────────────────────────────────────────────────────┐
 │  Next.js frontend            (Vercel, static + edge)      │
 └───────────────────────────┬───────────────────────────────┘
-                            │  SSE
+                            │  NDJSON
 ┌───────────────────────────▼───────────────────────────────┐
 │  API shell — FastAPI (hosted) │ Django (local)            │
 │  thin: HTTP, streaming, rate limiting, telemetry          │
@@ -46,7 +46,9 @@ Visual walkthrough of the request path: [`medical-rag-system-flow.html`](./medic
 
 **`rag_core`** — a plain Python package with no web framework and no provider SDKs imported at module level. Everything provider-specific enters through a port. This package is the deliverable; the two HTTP shells are packaging.
 
-**API shell** — owns transport only. Request validation, SSE framing, rate limiting, telemetry assembly, error mapping. If a behaviour would be identical over gRPC, it belongs in `rag_core`, not here.
+**API shell** — owns transport only. Request validation, NDJSON framing, rate limiting, telemetry assembly, error mapping. If a behaviour would be identical over gRPC, it belongs in `rag_core`, not here.
+
+The transport is **NDJSON**, one JSON object per line, not SSE. An earlier draft of this document said SSE. The local build ships `application/x-ndjson` with a tested browser-side parser, and reusing that frame vocabulary makes the frontend a re-skin rather than a rewrite. `json.dumps` escapes embedded newlines, so answer text containing line breaks cannot split a frame. The frame types are `meta`, `token`, `sources`, `error`, `done`, defined in `rag_core/contracts.py` so the shell and the frontend can be built against one definition.
 
 **Frontend** — a single question box, a streaming answer pane with inline citations, and a telemetry strip showing gate decision, fused scores, retrieval latency, time to first token, and which provider served the request. The telemetry strip is a product feature, not debug output; it is the part that shows engineering rather than describing it.
 
@@ -84,8 +86,17 @@ Profile selection is one environment variable read at startup, resolved once int
 
 Hosted profile, single Postgres database. Dense and lexical retrieval hit the same table, which is the main structural win over the local split between ChromaDB and SQLite.
 
+The `document` table below was referenced but never defined in the first draft of this section; `chunk.document_id` had a foreign key pointing at nothing. It is defined here, and TICKET-2 implements it.
+
 ```sql
 create extension if not exists vector;
+
+create table document (
+  id            text primary key,       -- slug, e.g. 'metformin'
+  title         text not null,
+  source_set_id text,                   -- openFDA set_id, pinning the exact label revision
+  ingested_at   timestamptz not null
+);
 
 create table chunk (
   id            text primary key,
@@ -115,11 +126,13 @@ create table index_manifest (
 
 ## 6. Ingestion path
 
-1. Parse source documents, preserving section structure where it exists.
-2. Chunk to roughly 800 tokens with about 15% overlap, splitting on section boundaries first and only falling back to fixed windows inside oversized sections.
+1. Parse source documents, preserving page structure.
+2. Chunk with the local build's page-aware recursive splitter, ported unchanged: **1000 characters with 150 characters of overlap, never spanning a page boundary**, splitting on `\n\n`, `\n`, `. `, then ` `. The effective maximum length is `size + overlap` — 1150 characters, roughly 300 tokens.
 3. Embed in batches sized to the provider's quota, with backoff.
 4. Upsert chunks with vectors and let the generated `tsvector` column populate itself.
 5. Write the manifest.
+
+An earlier draft specified ~800 tokens with 15% overlap and section-first splitting. That was replaced with the shipped chunker for two reasons: every measured number in the local build's evaluation was produced by this splitter, so changing it invalidates the baseline the parity claim rests on; and never spanning a page boundary is what gives every chunk an exact page number, which is what the schema's `anchor` column stores and what citations resolve to.
 
 Run offline. On free embedding quotas a full corpus pass may need to span more than one day, which is fine for a fixed corpus and is exactly why on-demand upload is out of scope.
 
@@ -147,6 +160,10 @@ Failing either returns a refusal. No prompt is built, no model is called.
 
 **Generate.** Build the prompt from the fused top-n chunks, each labelled with its chunk ID, and instruct the model to cite by ID and to decline anything not present in the context. Stream tokens through.
 
+**Gate again — stage 2.** The gate above is stage 1, and it is not the whole refusal path. The system prompt instructs the model to answer with the exact string `INSUFFICIENT_CONTEXT` and nothing else when the retrieved context does not support an answer; the stream is buffered until that decision is conclusive, and a refusal is replaced with server-authored copy rather than being passed through.
+
+This document originally described only stage 1. Stage 2 is not an implementation detail: on the local build's evaluation set it accounted for 9 of 25 correct declines — the near-miss questions where retrieval finds the right *document* but the specific fact is absent. Dropping it would have quietly halved the refusal path. The buffering is what makes it possible; a sentinel cannot be streamed to the browser and then retracted, and the buffer costs a few tokens of latency.
+
 **Cite.** Resolve chunk IDs in the output to source document and anchor on the way out. An unresolvable citation is a bug and is logged as one.
 
 ## 8. Failure handling
@@ -169,17 +186,36 @@ Vercel Hobby permits non-commercial personal use only, which covers a portfolio 
 
 ---
 
-## ADR-001: Extract `rag_core` rather than fork the Django app
+## ADR-001: A standalone repository with a verbatim-ported core
 
-**Status:** Accepted · **Date:** 17 Aug 2026
+**Status:** Amended · **Date:** 17 Aug 2026 · Originally "Extract `rag_core` rather than fork the Django app"
 
 ### Context
 
-The local system is a Django application with retrieval logic distributed across views, services, and management commands. The hosted profile needs different providers and a deployment target Django does not suit well. The obvious move is a fork.
+The local system is a Django application with retrieval logic already isolated in a framework-free `rag/` package — 735 lines, no Django imports, pinned by a purity test. The coupling to Django is confined to the orchestration around it. The hosted profile needs different providers and a deployment target Django does not suit well.
+
+This ADR originally chose Option B below: one repository containing `rag_core` with both a Django and a FastAPI shell over it. That is not what was built.
 
 ### Decision
 
-Extract all retrieval logic into a framework-agnostic `rag_core` package with provider ports. Django and FastAPI become thin shells over it.
+**Amended.** The hosted profile lives in its own repository. The pure modules — chunking, fusion, gate, prompts, sentinel — are ported into it **unchanged**, and they bring their existing test suites with them. The four provider ports are defined in the new repository; the Django application is left untouched.
+
+The Options analysis below is unchanged, because its reasoning still holds and its warning is now a live risk rather than one this design avoided.
+
+### Why the amendment
+
+A shared package would have made parity structural: one implementation, therefore no drift possible. Two repositories cannot offer that guarantee, so it is replaced with a behavioural one — **the same tests, asserting the same numbers, running against both copies.** The ported test files are byte-identical to the originals apart from an import prefix, and that identity is verified rather than asserted:
+
+```bash
+diff <(sed 's/^from rag\./from rag_core./' $SRC/tests/unit/test_gate.py) tests/unit/test_gate.py
+```
+
+This is genuinely weaker than a shared package. It catches behavioural divergence, not the slow structural rot of two codebases growing apart, and it only holds as long as nobody edits a ported test to make a port compile. The guard against that is that a red ported test is treated as a port bug, never a test bug.
+
+Two consequences follow and are accepted:
+
+- **PRD G2 and success criterion 5 cannot hold as written.** "Both profiles run from the same `rag_core` package" is false across two repositories. Restated in the PRD.
+- **The vendored files are excluded from the formatter and from three lint rules** (`pyproject.toml`). A formatter rewrite would destroy the diff that makes this decision defensible, so the tooling is configured to leave them alone rather than relying on discipline.
 
 ### Options considered
 
@@ -216,14 +252,18 @@ The over-abstraction risk is bounded by holding the port count to four and refus
 - Easier: testing retrieval with fake providers, at speed, with no network.
 - Easier: adding a third profile later, which is what a client would actually ask for.
 - Harder: the first day is refactoring rather than building.
+- **Harder, post-amendment:** the two copies can now drift, and only behaviour is checked. A change to the local build's chunker will not fail anything here.
 - Revisit: if a port only ever has one real implementation, delete it.
+
+On that last point — in this repository each port has exactly one real adapter plus a fake. The fake is the second implementation and it is not merely test scaffolding: it is what lets the entire pipeline run in milliseconds with nothing installed and nothing reachable, which is the stated payoff of the abstraction. That is the justification, and it is recorded here rather than left implicit.
 
 ### Action items
 
-1. [ ] Extract chunking, retrieval, fusion, gate, prompt assembly into `rag_core`
-2. [ ] Define the four ports; no provider SDK imported inside the package
-3. [ ] Fake adapters for tests
-4. [ ] Reduce the Django views to shell calls
+1. [x] Port chunking, fusion, gate, prompt assembly and the sentinel filter into `rag_core`
+2. [x] Define the four ports; no provider SDK imported inside the package
+3. [x] Fake adapters — in `rag_adapters`, not in `tests/`
+4. [x] Carry the pure modules' test suites across unedited, and verify the diff
+5. [x] ~~Reduce the Django views to shell calls~~ — not applicable under the amendment; the Django application is untouched
 
 ---
 
@@ -286,11 +326,17 @@ The `ts_rank_cd` substitution is the honest cost of the move. It is a coverage-d
 
 ## ADR-003: Gate on raw retrieval scores, not the RRF score
 
-**Status:** Accepted · **Date:** 17 Aug 2026 · **Supersedes** the local build's gate input
+**Status:** Amended · **Date:** 17 Aug 2026 · Originally claimed to supersede the local build's gate input
 
 ### Context
 
-The local implementation evaluates the confidence gate on the fused hybrid score. Reviewing that for the hosted port surfaced a flaw worth correcting rather than porting.
+**Correction.** This ADR was written on the premise that "the local implementation evaluates the confidence gate on the fused hybrid score." That is not true, and reading the code before porting is what surfaced it. The local build already gates on the raw vector-leg `top_similarity` plus cross-retriever agreement — Option C below, the option this ADR goes on to choose. Its own source says so at the top of `chat/retrieval.py`:
+
+> The gate reads `top_similarity` from the VECTOR leg directly, not from fused output: RRF deliberately discards score magnitude, so fused scores carry no similarity information.
+
+and the behaviour is pinned by `test_mean_similarity_does_not_affect_the_decision` in its gate tests. So this ADR supersedes nothing; it *documents* a design the local build already has. The reasoning below is still worth keeping, because it is the argument for that design — it simply is not a correction to anything.
+
+What survives as live work is the note in Consequences about re-tuning τ. That part is real and it is the highest-likelihood risk in the PRD.
 
 Reciprocal rank fusion consumes ranks and discards magnitudes. Every non-empty result set produces a top-1 with the same fused score — `2/(60+1)` when both retrievers agree on first place — whether the best chunk is a near-exact match or entirely unrelated. A threshold over RRF output therefore measures *how many retrievers agreed on an ordering*, not *whether anything relevant was found*. It is very nearly a constant.
 
@@ -300,7 +346,7 @@ Gate on the raw scores. Require the best cosine similarity to clear τ, and requ
 
 ### Options considered
 
-**Option A — Threshold on the fused RRF score** (the current local behaviour)
+**Option A — Threshold on the fused RRF score** (~~the current local behaviour~~ — never implemented anywhere; see the correction above)
 
 Pros: one number, already implemented.
 Cons: the number is scale-free and nearly constant; the gate does not do what its name says.
@@ -330,10 +376,10 @@ Being able to say in the telemetry strip *which* condition failed is worth the s
 
 ### Action items
 
-1. [ ] Change the gate input to raw scores; keep RRF for context ordering
-2. [ ] Sweep τ against the evaluation set, plotting refusal rate versus answer quality
-3. [ ] Report both conditions separately in telemetry
-4. [ ] Backport the fix to the local profile — the flaw is in both
+1. [x] ~~Change the gate input to raw scores~~ — already the case; the ported gate is unchanged and keeps RRF for context ordering
+2. [ ] **Sweep τ against the evaluation set**, plotting refusal rate versus answer quality (TICKET-8). The carried-over 0.70 / 0.75 are marked invalid in `rag_core/config.py` — they were measured against a different embedding model and say nothing about this one
+3. [x] Report both conditions separately in telemetry — `contracts.explain_gate` returns them independently and `Telemetry.as_dict` never collapses them into one number
+4. [x] ~~Backport the fix to the local profile — the flaw is in both~~ — **not applicable.** There is no flaw to backport; the local profile was already correct
 
 ---
 
