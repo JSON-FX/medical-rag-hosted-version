@@ -104,12 +104,15 @@ def _build_local(cfg: RagConfig) -> Profile:
     anchors, and swaps only the two adapters that cost money per call.
 
     The consequence to know about: `FakeEmbedder` is a four-axis one-hot vector
-    keyed on drug name, so the stage-1 gate here is coarse. A question naming a
-    drug in the corpus scores 1.0 and passes; a question naming none scores 0.0
-    and refuses. That makes both paths reachable without an API key, but it
-    does NOT reproduce a near-miss refusal — "atenolol in pregnancy" names a
-    drug, so it passes stage 1 here and would refuse under real embeddings.
-    Judge refusal *behaviour* on `hosted`; use this to build the interface.
+    keyed on drug name, so the stage-1 gate here is effectively inert. A
+    question naming a drug matches that drug's chunks at similarity 1.0; a
+    question naming none matches every chunk that also names none — of which
+    the corpus has many — at similarity 1.0 as well. Measured, not assumed:
+    "What is the capital of France?" is ANSWERED under this profile and refused
+    under `hosted`.
+
+    So this profile exercises the transport, the citations and the strip. It
+    does not exercise the gate. Judge refusal behaviour on `hosted` only.
     """
     from .postgres import PostgresDenseStore, PostgresLexicalStore, PostgresPool
 

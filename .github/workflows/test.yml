@@ -64,3 +64,40 @@ jobs:
         run: uv run pytest -m postgres -v
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+
+  # A separate job rather than more steps on `check`: the frontend needs Node
+  # and no database, the backend needs Python and a database, and neither
+  # waits on the other. A single job would serialise them and make a Node
+  # install a prerequisite for learning that mypy is unhappy.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # `ci` rather than `install`: it installs exactly the lockfile and fails
+      # if package.json has drifted from it, which is the point of committing
+      # a lockfile at all.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npx eslint .
+
+      - name: Tests
+        run: npm test
+
+      - name: Build
+        run: npm run build

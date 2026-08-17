@@ -289,3 +289,39 @@ async def test_the_ingested_corpus_is_retrievable(pool, embedder):
     assert result.chunks
     assert all(c.page_number > 0 for c in result.chunks)
     assert any("metformin" in c.chunk_id for c in result.chunks)
+
+
+async def test_switching_embedder_re_embeds_everything_rather_than_skipping(pool):
+    """The content check cannot see which model made a vector.
+
+    Resume skips a chunk whose CONTENT is unchanged, and content is unchanged
+    when only the embedder differs — so ingesting with a second embedder
+    skipped all 71 chunks and then rewrote the manifest to name it, leaving the
+    first embedder's vectors labelled as the second's.
+
+    That defeats the startup check exactly where it matters most: it compares
+    the configured embedder against the manifest, both now agree, and the
+    service serves the plausible-looking garbage ARCHITECTURE.md §5 exists to
+    prevent. Found while building TICKET-7, which is the first thing to make
+    switching embedders routine (the `local` profile).
+    """
+    first = FakeEmbedder(model_id="embedder-one")
+    second = FakeEmbedder(model_id="embedder-two")
+
+    await ingest_all(pool, first, CFG)
+    results = await ingest_all(pool, second, CFG)
+
+    assert sum(r.skipped for r in results) == 0, "a vector cannot be reused across models"
+    assert sum(r.embedded for r in results) == sum(r.total for r in results)
+
+    manifest = await PostgresDenseStore(pool).read_manifest()
+    assert manifest is not None
+    assert manifest.embedding_model_id == "embedder-two"
+
+
+async def test_rerunning_with_the_same_embedder_still_costs_nothing(pool, embedder):
+    """The re-embed guard must not fire on the ordinary resume path, which is
+    the whole reason the job is resumable (PRD F4)."""
+    await ingest_all(pool, embedder, CFG)
+    results = await ingest_all(pool, embedder, CFG)
+    assert sum(r.embedded for r in results) == 0

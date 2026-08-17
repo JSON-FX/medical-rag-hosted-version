@@ -74,6 +74,30 @@ test("a resolvable answer logs nothing", () => {
   expect(logged).not.toHaveBeenCalled();
 });
 
+test("a grouped citation becomes one button per source", () => {
+  // Llama 3.3 answers a two-source question with "[1, 2]". A pattern matching
+  // only [n] rendered ZERO citations for a fully-cited answer — measured
+  // against the real model, not inferred from the prompt.
+  const onCite = renderAnswer("The dose is 500 mg twice a day [1, 2].", 2);
+  const buttons = screen.getAllByRole("button");
+  expect(buttons).toHaveLength(2);
+  buttons[1].click();
+  expect(onCite).toHaveBeenCalledWith(1);
+});
+
+test("a grouped citation with no spaces also resolves", () => {
+  renderAnswer("See [1,2,3].", 3);
+  expect(screen.getAllByRole("button")).toHaveLength(3);
+});
+
+test("a mixed group keeps the working citation and degrades only the invented one", () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  renderAnswer("Supported by [1, 9].", 2);
+  expect(screen.getAllByRole("button")).toHaveLength(1);
+  expect(document.body.textContent).toContain("[9]");
+  expect(logged).toHaveBeenCalledOnce();
+});
+
 test("text with no markers renders unchanged", () => {
   renderAnswer("I can't answer that from the labels this system has indexed.", 0);
   expect(document.body.textContent).toBe(

@@ -567,3 +567,30 @@ async def test_health_says_why_when_unserviceable():
     assert response.status_code == 503
     assert response.json()["serviceable"] is False
     assert response.json()["reason"]
+
+
+# --- same-origin deployment ----------------------------------------------
+
+
+async def test_the_hosted_profile_adds_no_cors_middleware(monkeypatch):
+    """TICKET-7: the frontend and this API deploy as two Vercel services in one
+    project sharing a domain, so nothing cross-origin exists to permit.
+
+    Before this, `allow_origins=["*"]` shipped on a public API — placed there
+    in TICKET-5 when the frontend's origin was unknown, and correct then. It is
+    unnecessary now, and a wildcard nobody needs is a wildcard nobody reviews.
+    """
+    monkeypatch.setenv("RAG_PROFILE", "hosted")
+    app = create_app()
+    assert not any(
+        "CORS" in type(m.cls).__name__ or "CORS" in str(m.cls) for m in app.user_middleware
+    )
+
+
+async def test_development_profiles_still_allow_the_next_dev_server(monkeypatch):
+    """Next runs on 3000 and this on 8000. The dev rewrite means the browser
+    normally sees one origin anyway, but a tool pointed straight at 8000 does
+    not, and development is the only place that is true."""
+    monkeypatch.setenv("RAG_PROFILE", "fake")
+    app = create_app()
+    assert any("CORS" in str(m.cls) for m in app.user_middleware)

@@ -29,6 +29,9 @@ The reasoning behind that boundary is in [`docs/ARCHITECTURE.md`](docs/ARCHITECT
 src/rag_core/       pure — chunking, fusion, gate, prompts, sentinel, ports, pipeline.
                     Imports nothing outside the standard library. Enforced by a test.
 src/rag_adapters/   impure — provider and store implementations, plus the composition root.
+src/rag_api/        transport — the FastAPI shell, streaming, telemetry, rate limiting, health.
+src/ingest/         the offline ingestion job. Never runs in a request handler.
+web/                the frontend. Next.js, deployed alongside the API as a second Vercel service.
 tests/unit/         unit tests. Several are ported unedited from the local build (see below).
 tests/contract/     one suite every adapter must satisfy, per port.
 docs/               PRD, architecture and ADRs, ticket breakdown.
@@ -110,6 +113,22 @@ export DATABASE_URL="postgresql://..."
 RAG_PROFILE=hosted uv run uvicorn rag_api.main:app --port 8000
 ```
 
+### Profiles
+
+| `RAG_PROFILE` | Stores | Embedder | Generator | For |
+|---|---|---|---|---|
+| `fake` | in-memory | fake | fake | the test suite; needs nothing installed |
+| `local` | Postgres | fake | fake | frontend development; real chunks and citations, no API keys |
+| `hosted` | Postgres | Gemini | Groq → Gemini | production, and any judgement about retrieval or the gate |
+
+`local` exists so the frontend can be built against real page anchors without spending quota on every page
+reload. Its embedder is a four-axis one-hot vector keyed on drug name, which means **the confidence gate is
+effectively inert under `local`** — "What is the capital of France?" is answered there and refused under
+`hosted`. Build the interface on `local`; judge behaviour on `hosted`.
+
+Switching profiles re-embeds the whole corpus, because a stored vector cannot be reused across models. The
+ingest job compares the stored manifest against the configured embedder and says so when it does.
+
 ```bash
 curl -s localhost:8000/api/health | python3 -m json.tool
 
@@ -125,6 +144,24 @@ what makes the refusal path read as deliberate rather than broken.
 
 If the index was built by a different embedding model than the one configured, every query returns 503 naming
 both — querying it would return plausible-looking garbage, which is the worst failure mode available.
+
+## Running the frontend
+
+```bash
+export DATABASE_URL="postgresql://..."
+RAG_PROFILE=local uv run python -m ingest.run          # once: real chunks, no API keys
+RAG_PROFILE=local uv run uvicorn rag_api.main:app --port 8000 &
+
+cd web && npm install && npm run dev                    # http://localhost:3000
+```
+
+Getting that order backwards — serving before ingesting — produces a 503 that looks like a bug and is the
+manifest check doing its job.
+
+There is no `NEXT_PUBLIC_API_URL`. In production the frontend and the API are two services in one Vercel
+project sharing a domain, so the browser fetches `/api/chat` same-origin; in development `web/next.config.ts`
+rewrites `/api/*` to port 8000 so the code path is identical. `vercel.json` describes that layout; TICKET-10
+activates it.
 
 ## Rate limiting and health
 
