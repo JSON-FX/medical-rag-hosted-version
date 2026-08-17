@@ -1,0 +1,77 @@
+{
+ "source": "openFDA drug label API (US federal work, public domain)",
+ "drugs": {
+  "metformin": {
+   "set_id": "011de1a5-1ac0-4831-9e8d-26ec79ba2205",
+   "included_sections": [
+    "adverse_reactions",
+    "contraindications",
+    "dosage_and_administration",
+    "drug_interactions",
+    "indications_and_usage"
+   ],
+   "withheld_sections": [
+    "overdosage",
+    "pediatric_use",
+    "pregnancy"
+   ],
+   "included_chars": 9930,
+   "verified_absent": [
+    "carcinogen",
+    "driving",
+    "geriatric",
+    "immunization",
+    "overdose",
+    "storage"
+   ]
+  },
+  "atenolol": {
+   "set_id": "09b21985-1818-449d-9b29-98f733cf7b9f",
+   "included_sections": [
+    "adverse_reactions",
+    "contraindications",
+    "dosage_and_administration",
+    "drug_interactions",
+    "indications_and_usage"
+   ],
+   "withheld_sections": [
+    "overdosage",
+    "pediatric_use",
+    "pregnancy"
+   ],
+   "included_chars": 17155,
+   "verified_absent": [
+    "carcinogen",
+    "driving",
+    "immunization",
+    "overdose",
+    "pediatric",
+    "pregnancy",
+    "storage"
+   ]
+  },
+  "amoxicillin": {
+   "set_id": "00fbd46e-05fd-4f8a-9f59-a7a4d01c8e54",
+   "included_sections": [
+    "adverse_reactions",
+    "contraindications",
+    "dosage_and_administration",
+    "drug_interactions",
+    "indications_and_usage"
+   ],
+   "withheld_sections": [
+    "overdosage",
+    "pediatric_use",
+    "pregnancy"
+   ],
+   "included_chars": 14596,
+   "verified_absent": [
+    "carcinogen",
+    "driving",
+    "geriatric",
+    "immunization",
+    "storage"
+   ]
+  }
+ }
+}

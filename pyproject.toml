@@ -39,7 +39,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/rag_core", "src/rag_adapters"]
+packages = ["src/rag_core", "src/rag_adapters", "src/ingest"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -93,6 +93,8 @@ select = ["E", "F", "I", "UP", "B"]
 "tests/unit/test_chunking.py" = ["E501", "I001"]
 "tests/unit/test_fusion.py" = ["E501", "I001"]
 "tests/unit/test_gate.py" = ["B017", "E501", "I001"]
+# axes.py is ported from the local build; its comments carry two recorded bugs.
+"src/ingest/axes.py" = ["E501"]
 
 [tool.ruff.format]
 # Same reasoning as the per-file-ignores above: reformatting the vendored port

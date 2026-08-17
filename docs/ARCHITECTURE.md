@@ -128,7 +128,7 @@ create table index_manifest (
 
 ## 6. Ingestion path
 
-1. Parse source documents, preserving page structure.
+1. Assemble each document from its committed fixture text, paginated at ~1200 characters on word boundaries. **No PDF is involved** — see the note below.
 2. Chunk with the local build's page-aware recursive splitter, ported unchanged: **1000 characters with 150 characters of overlap, never spanning a page boundary**, splitting on `\n\n`, `\n`, `. `, then ` `. The effective maximum length is `size + overlap` — 1150 characters, roughly 300 tokens.
 3. Embed in batches sized to the provider's quota, with backoff.
 4. Upsert chunks with vectors and let the generated `tsvector` column populate itself.
@@ -136,7 +136,23 @@ create table index_manifest (
 
 An earlier draft specified ~800 tokens with 15% overlap and section-first splitting. That was replaced with the shipped chunker for two reasons: every measured number in the local build's evaluation was produced by this splitter, so changing it invalidates the baseline the parity claim rests on; and never spanning a page boundary is what gives every chunk an exact page number, which is what the schema's `anchor` column stores and what citations resolve to.
 
-Run offline. On free embedding quotas a full corpus pass may need to span more than one day, which is fine for a fixed corpus and is exactly why on-demand upload is out of scope.
+### Why there is no PDF round-trip
+
+The local build renders these same fixtures into a PDF and reads them back with `pypdf`, on the reasoning that it "exercises the page-aware chunker the way an uploaded document would". That round-trip is lossy, and measurably so: its writer escapes the characters that would corrupt the *file* (`\`, `(`, `)`) but emits the text as raw UTF-8 into a content stream declared `/Helvetica` with no encoding, so `pypdf` decodes those bytes as Latin-1.
+
+Measured across all three labels, **every one of the 28 non-ASCII characters corrupts**:
+
+| | source | after the round-trip | pages affected |
+|---|---|---|---|
+| amoxicillin | `β-lactamase` | `Î²-lactamase` | 7 of 13 |
+| atenolol | `Program's` | `Programâ€™s` | 4 of 15 |
+| metformin | `patient's` | `patientâ€™s` | 2 of 9 |
+
+So the local build embedded `Î²-lactamase`, indexed it, and a visitor asking about β-lactamase gets no lexical match at all. This profile ingests the text directly: lossless, and one dependency lighter. Pagination survives the PDF's removal because the page number is what a citation resolves to.
+
+**Consequence for TICKET-9.** The local retrieval baseline was measured over that corrupted text, so a hosted-vs-local comparison now has a third variable in it alongside pgvector and `ts_rank_cd`. The hosted corpus is *better*, not merely different, and that improvement is not attributable to the storage change. The evaluation write-up has to say so rather than bank it.
+
+Run offline. On free embedding quotas a full corpus pass may need to span more than one day, which is fine for a fixed corpus and is exactly why on-demand upload is out of scope. The job is resumable without a checkpoint file: `upsert` is idempotent on chunk id, so the rows already stored are the progress marker, and the manifest is written last so an interrupted run leaves an index the startup check will refuse to serve.
 
 ## 7. Query path
 

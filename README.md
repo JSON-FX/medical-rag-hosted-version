@@ -69,6 +69,26 @@ export GEMINI_API_KEY=... GROQ_API_KEY=...
 uv run pytest -m live
 ```
 
+## Corpus
+
+Three FDA drug labels — metformin, atenolol, amoxicillin — public domain, pinned to exact label revisions by
+`set_id`. Around 71 chunks. Deliberately narrow: each drug has axes measured *absent* from its text, so a
+visitor can find the edges of what the system knows in under a minute, and the refusal path is easy to trigger
+on purpose rather than by accident.
+
+Ingestion is offline and idempotent. Re-running converges instead of duplicating, and resuming after an
+interruption costs only the embeddings that had not yet been made:
+
+```bash
+export DATABASE_URL="postgresql://..." GEMINI_API_KEY=...
+uv run python db/migrate.py
+RAG_PROFILE=hosted uv run python -m ingest.run
+```
+
+There is no PDF anywhere in that path, and the reason is worth knowing: the local build round-trips the same
+fixtures through a generated PDF, which corrupts every non-ASCII character in the corpus — `β-lactamase`
+becomes `Î²-lactamase`. See [`docs/ARCHITECTURE.md` §6](docs/ARCHITECTURE.md).
+
 ## Providers
 
 Embeddings come from `gemini-embedding-001`, reduced from its native 3072 dimensions to the
