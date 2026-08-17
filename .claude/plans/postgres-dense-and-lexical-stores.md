@@ -533,9 +533,11 @@ STORE_PAIRS = [
     pytest.param("pg_stores", marks=pytest.mark.postgres),
 ]
 
+
 @pytest.fixture
 def stores(request):
     return request.getfixturevalue(request.param)
+
 
 @pytest.mark.parametrize("stores", STORE_PAIRS, indirect=True)
 async def test_dense_results_are_ordered_by_ascending_distance(stores): ...

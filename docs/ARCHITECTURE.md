@@ -120,6 +120,8 @@ create table index_manifest (
 );
 ```
 
+`index_manifest` is constrained to a single row (`check (id = 1)`). The `default 1` above permits rows 2, 3, … which would make "the" manifest ambiguous; there is exactly one index, so there is exactly one manifest. `chunk.document_id` cascades on delete, so removing a document cannot strand its chunks.
+
 `index_manifest` exists because the embedding model is part of the schema, not a runtime setting. On startup the service compares the configured embedder against the manifest and refuses to serve if they disagree. Silently querying an index built by a different model returns plausible-looking garbage, which is the worst failure mode available.
 
 `ordinal` and the unique constraint make ingestion idempotent: re-running upserts in place rather than duplicating.
@@ -318,9 +320,9 @@ The `ts_rank_cd` substitution is the honest cost of the move. It is a coverage-d
 
 ### Action items
 
-1. [ ] Schema with `vector(768)`, HNSW cosine index, generated `tsvector`, GIN index
-2. [ ] Measure `ts_rank_cd` against the FTS5 baseline on the evaluation set
-3. [ ] Document the ranking difference in the README rather than hiding it
+1. [x] Schema with `vector(768)`, HNSW cosine index, generated `tsvector`, GIN index — `db/migrations/001_initial.sql`
+2. [ ] Measure `ts_rank_cd` against the FTS5 baseline on the evaluation set (TICKET-9)
+3. [ ] Document the ranking difference in the README rather than hiding it (TICKET-9)
 
 ---
 

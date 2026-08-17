@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from .config import GateConfig
@@ -48,6 +49,23 @@ class Chunk:
 class EmbeddedChunk:
     chunk: Chunk
     embedding: Vector
+
+
+@dataclass(frozen=True)
+class IndexManifest:
+    """What built the index, recorded alongside it.
+
+    The embedding model is part of the schema, not a runtime setting
+    (ARCHITECTURE.md §5). At startup the service compares the configured
+    embedder against this and refuses to serve on disagreement — querying an
+    index built by a different model returns plausible-looking garbage, which
+    is the worst failure mode available because nothing about the output looks
+    wrong.
+    """
+
+    embedding_model_id: str
+    dimension: int
+    ingested_at: datetime
 
 
 @dataclass(frozen=True)

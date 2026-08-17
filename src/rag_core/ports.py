@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Protocol
 
-from .contracts import Chunk, EmbeddedChunk, Scored, Token, Vector
+from .contracts import Chunk, EmbeddedChunk, IndexManifest, Scored, Token, Vector
 
 
 class EmbeddingProvider(Protocol):
@@ -73,6 +73,26 @@ class DenseStore(Protocol):
         normal outcome). The pipeline calls this only when both legs come back
         empty, so it stays off the hot path.
         """
+        ...
+
+    async def read_manifest(self) -> IndexManifest | None:
+        """What built this index, or None if nothing has been written.
+
+        Also not in ARCHITECTURE.md §4's port list, and deliberately NOT a
+        fifth port: ADR-001 caps the count at four and refuses another "without
+        a third implementation demanding it". The manifest records which
+        embedding model produced these vectors, so it belongs to the dense
+        index rather than beside it. A separate concrete manifest class would
+        work for the hosted profile but would force the startup check to branch
+        on profile, which ADR-001 forbids below the composition root.
+
+        None means absent, and is distinguishable from a manifest whose fields
+        happen to be empty. The startup check treats absent as refuse-to-serve.
+        """
+        ...
+
+    async def write_manifest(self, manifest: IndexManifest) -> None:
+        """Record what built the index. Written last by the ingestion job."""
         ...
 
 

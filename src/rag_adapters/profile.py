@@ -12,7 +12,8 @@ that (ARCHITECTURE.md §3, enforced by tests/unit/test_core_purity.py).
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Protocol
 
 from rag_core.config import RagConfig
 from rag_core.ports import DenseStore, EmbeddingProvider, GenerationProvider, LexicalStore
@@ -20,15 +21,55 @@ from rag_core.ports import DenseStore, EmbeddingProvider, GenerationProvider, Le
 from .fakes import FakeDenseStore, FakeEmbedder, FakeGenerator, FakeLexicalStore
 
 
+class Lifecycle(Protocol):
+    """Something holding a connection that outlives a single call."""
+
+    async def open(self) -> None: ...
+
+    async def close(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class Profile:
-    """The four adapters, resolved once."""
+    """The four adapters, resolved once.
+
+    Construction and connection are separate. `build_profile` stays synchronous
+    — an adapter that needs a connection pool cannot be built in a sync
+    function, because the pool must be created inside a running event loop, and
+    making the whole composition root async would push an `await` into every
+    caller for the sake of one adapter. So building a profile always succeeds,
+    even against an unreachable database, and `open()` is what actually
+    connects. The API shell calls it from its lifespan hook.
+
+    The container stays frozen; adapters that hold a mutable connection keep it
+    on themselves and `open`/`close` delegate.
+    """
 
     name: str
     embedder: EmbeddingProvider
     generator: GenerationProvider
     dense: DenseStore
     lexical: LexicalStore
+    # Anything needing a connection. Declared explicitly rather than discovered
+    # by probing the adapters for an `open` attribute: the ports are Protocols
+    # and this codebase does not use runtime_checkable, so a duck-typed probe
+    # would silently skip an adapter whose method was renamed.
+    resources: tuple[Lifecycle, ...] = field(default_factory=tuple)
+
+    async def open(self) -> None:
+        """Connect whatever needs connecting. No-op when nothing does."""
+        for resource in self.resources:
+            await resource.open()
+
+    async def close(self) -> None:
+        """Release connections.
+
+        Idempotent, and safe to call when `open()` never ran — a shell that
+        fails during startup still runs its shutdown path, and a close that
+        raises there buries the original error.
+        """
+        for resource in self.resources:
+            await resource.close()
 
 
 def _build_fake(cfg: RagConfig) -> Profile:
@@ -41,11 +82,38 @@ def _build_fake(cfg: RagConfig) -> Profile:
     )
 
 
+def _build_hosted(cfg: RagConfig) -> Profile:
+    """Postgres for both retrieval legs (ADR-002).
+
+    Deliberately does not connect: the pool is created in `Profile.open()`, so
+    building a hosted profile against an unreachable database succeeds and
+    fails later, where the error can be reported properly.
+    """
+    from .postgres import PostgresDenseStore, PostgresLexicalStore, PostgresPool
+
+    pool = PostgresPool(
+        dsn=cfg.database.dsn,
+        min_size=cfg.database.pool_min_size,
+        max_size=cfg.database.pool_max_size,
+    )
+    return Profile(
+        name="hosted",
+        # Placeholder until TICKET-3 lands the Gemini and Groq adapters. The
+        # stores below are real; inference is not yet.
+        embedder=FakeEmbedder(dimension=cfg.embedding.dimension),
+        generator=FakeGenerator(model_id=cfg.generation.primary_model_id),
+        dense=PostgresDenseStore(pool),
+        lexical=PostgresLexicalStore(pool),
+        resources=(pool,),
+    )
+
+
 # The registration seam. TICKET-2 and TICKET-3 each add one entry here rather
 # than growing an if/elif chain — which is what keeps "no conditional provider
 # logic below this point" true as the number of profiles grows.
 _REGISTRY: dict[str, Callable[[RagConfig], Profile]] = {
     "fake": _build_fake,
+    "hosted": _build_hosted,
 }
 
 

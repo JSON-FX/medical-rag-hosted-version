@@ -18,8 +18,10 @@ from __future__ import annotations
 import math
 from collections.abc import AsyncIterator, Iterable
 
-from rag_core.contracts import Chunk, EmbeddedChunk, Scored, Token, Vector
+from rag_core.contracts import Chunk, EmbeddedChunk, IndexManifest, Scored, Token, Vector
 from rag_core.errors import ProviderUnavailable
+
+from .tsquery import extract_terms
 
 DIMENSIONS = 768
 
@@ -88,6 +90,7 @@ class FakeDenseStore:
 
     def __init__(self, chunks: Iterable[EmbeddedChunk] = ()) -> None:
         self._chunks: dict[str, EmbeddedChunk] = {c.chunk.id: c for c in chunks}
+        self._manifest: IndexManifest | None = None
 
     async def search(self, vector: Vector, k: int) -> list[Scored[Chunk]]:
         if k <= 0:
@@ -106,9 +109,23 @@ class FakeDenseStore:
     async def count(self) -> int:
         return len(self._chunks)
 
+    async def read_manifest(self) -> IndexManifest | None:
+        return self._manifest
+
+    async def write_manifest(self, manifest: IndexManifest) -> None:
+        self._manifest = manifest
+
 
 class FakeLexicalStore:
-    """LexicalStore. Naive term overlap, DESCENDING — best first."""
+    """LexicalStore. Naive term overlap, DESCENDING — best first.
+
+    Query terms come from the same `extract_terms` the real adapter uses. An
+    earlier version tokenised the query itself and applied no stopword list, so
+    "what is it?" matched every chunk containing "is" here while returning
+    nothing on Postgres. Both suites stayed green and the gate's
+    `lexical_support` signal silently differed between profiles — exactly the
+    divergence a shared contract suite exists to prevent.
+    """
 
     def __init__(self, chunks: Iterable[Chunk] = ()) -> None:
         self._chunks: dict[str, Chunk] = {c.id: c for c in chunks}
@@ -120,7 +137,7 @@ class FakeLexicalStore:
     async def search(self, query: str, k: int) -> list[Scored[Chunk]]:
         if k <= 0:
             return []
-        query_terms = self._terms(query)
+        query_terms = set(extract_terms(query))
         if not query_terms:
             return []
         scored = [
