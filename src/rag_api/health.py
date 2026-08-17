@@ -7,6 +7,8 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from .chat import enforce_rate_limit
+from .probe import probe_generators, probe_store
 from .state import AppState
 
 router = APIRouter()
@@ -22,13 +24,17 @@ async def health(request: Request) -> Any:
     health endpoint after a model-tag mismatch surfaced as a 404 from the chat
     endpoint instead.
 
-    ADR-004's scheduled exercise of the secondary provider is TICKET-6; this
-    does not call out to any provider.
+    Shallow by default and free, so a monitor can poll it without burning the
+    quota the rate limiter exists to protect. `?deep=1` additionally probes
+    each generation provider INDIVIDUALLY — which is ADR-004's fourth action
+    item, and the question whose absence let a retired secondary model go
+    unnoticed until TICKET-4.
     """
     state: AppState = request.app.state.rag
     manifest = state.manifest
+    deep = request.query_params.get("deep") in {"1", "true", "yes"}
 
-    body = {
+    body: dict[str, Any] = {
         "serviceable": state.serviceable,
         "reason": state.reason,
         "profile": state.profile.name,
@@ -46,4 +52,24 @@ async def health(request: Request) -> Any:
             else None
         ),
     }
-    return JSONResponse(status_code=200 if state.serviceable else 503, content=body)
+
+    healthy = state.serviceable
+
+    if deep:
+        # Deep costs a generation per provider, so it is rate limited like the
+        # chat endpoint. Shallow is not — it must stay reachable for diagnosis.
+        limited = await enforce_rate_limit(request)
+        if limited is not None:
+            return limited
+
+        store = await probe_store(state.profile)
+        generators = await probe_generators(state.profile)
+        body["store"] = store.as_dict()
+        body["generators"] = [g.as_dict() for g in generators]
+        # ANY failed probe is unhealthy, including a healthy primary with a
+        # dead secondary. A working demo with a dead fallback is not healthy;
+        # it is one rate limit away from broken, and that is exactly the state
+        # that went unnoticed.
+        healthy = healthy and store.ok and all(g.ok for g in generators)
+
+    return JSONResponse(status_code=200 if healthy else 503, content=body)

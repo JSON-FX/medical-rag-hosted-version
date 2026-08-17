@@ -207,9 +207,24 @@ This document originally described only stage 1. Stage 2 is not an implementatio
 | All generators unavailable | Explicit service message; never an ungrounded answer |
 | Embedding provider down | Fail the request; there is no meaningful degraded retrieval without a query vector |
 | Manifest mismatch at startup | Refuse to serve, log loudly. The service stays up and returns **503 naming both disagreeing model ids** on every query, with `/api/health` saying the same. Refusing every request is refusing to serve; failing to start is not louder on serverless, it is opaque — every invocation returns a platform 500 with the reason buried in logs. |
-| Per-IP rate limit exceeded | 429 with a plain-language message and retry hint |
+| Per-IP rate limit exceeded | 429 with a plain-language message and a `Retry-After` header. **10/minute and 100/day per address**; the daily cap is the one that protects quota, since a minute limit alone still permits 14,400 requests a day from one IP. |
+| Rate limiter itself unreachable | **Fail open** — the request is allowed and the failure is logged at warning. See the note below. |
 
 The fallback chain is a hard requirement rather than polish, because free tiers change quota without notice and a single-provider demo is a demo with an expiry date nobody told you about.
+
+### On failing open
+
+If Upstash is unreachable the rate limiter allows the request. That is a real hole and worth stating rather than burying: during an Upstash outage the demo is unprotected, and the PRD risk it mitigates — *"A scraper burns the daily quota → Demo dead for the day"* — becomes live again.
+
+The argument for it anyway is that the demo already depends on Neon and two inference providers, all free tiers with no SLA. A fourth dependency whose failure takes the whole thing down trades a *likely* failure (an Upstash hiccup killing the demo) for an *unlikely* one (a scraper arriving during that hiccup). PRD success criterion 6 — that it still works thirty days later, which the PRD itself calls the criterion most likely to fail — points the same way.
+
+What makes that defensible rather than lazy is the logging: a limiter that fails open silently is indistinguishable from having no limiter at all. Every failure logs at warning, startup logs loudly when no credentials are configured, and a test pins the behaviour so nobody quietly tightens it into fail-closed.
+
+### What the health endpoint costs
+
+`/api/health` is shallow and free: serviceability, the manifest, store configuration. `?deep=1` additionally probes every generation provider individually and returns 503 if **any** probe fails — including a healthy primary with a dead secondary, because a working demo with a dead fallback is one rate limit away from broken.
+
+Deep health is rate limited; shallow is not. Limiting is by cost rather than by URL: shallow health must stay reachable for diagnosis, and a monitor polling it once a minute would exhaust the daily cap on its own.
 
 ## 9. Deployment
 
@@ -445,7 +460,7 @@ Two providers means two prompt behaviours to validate and two sets of quirks. Th
 1. [x] Implement failover on rate limit and error, with one retry before falling through — `rag_adapters/failover.py`. **Groq primary, Gemini secondary**: time-to-first-token is the NFR with a hard number and Groq is faster, and two vendors keeps the quota and outage domains genuinely independent.
 2. [~] Surface the active provider — `TokenStream.served_by` carries it per request. The response payload is TICKET-5's and the UI is TICKET-7's.
 3. [~] Validate the prompt against both models — a `live`-marked smoke test asserts both emit the exact sentinel on insufficient context. Validating across the **evaluation set** needs the harness and stays with TICKET-8.
-4. [ ] Health check that exercises the secondary path on a schedule (TICKET-6) — **now evidence-backed rather than precautionary.** The first live exercise of the chain found the secondary was dead: `gemini-2.0-flash` had been retired, and nothing would have discovered it until the failover was actually needed. This ADR's own note anticipated it — "if the secondary is never exercised in ninety days, test it deliberately rather than assuming it works."
+4. [x] Health check that exercises the secondary path on a schedule — `.github/workflows/provider-check.yml`, weekly, probing each provider **individually** via `rag_api.probe`. Also reachable on demand at `/api/health?deep=1`. **Evidence-backed rather than precautionary.** The first live exercise of the chain found the secondary was dead: `gemini-2.0-flash` had been retired, and nothing would have discovered it until the failover was actually needed. This ADR's own note anticipated it — "if the secondary is never exercised in ninety days, test it deliberately rather than assuming it works."
 
 ### Two corrections from the first live run
 

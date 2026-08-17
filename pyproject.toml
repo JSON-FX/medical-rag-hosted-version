@@ -26,6 +26,8 @@ providers = [
 api = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
+    "upstash-ratelimit>=1.0",
+    "upstash-redis>=1.2",
 ]
 
 [dependency-groups]
