@@ -105,13 +105,15 @@ async def ingest_document(
     embedder: EmbeddingProvider,
     slug: str,
     cfg: RagConfig,
+    *,
+    reembed_all: bool = False,
 ) -> IngestResult:
     chunks = build_chunks(slug, cfg)
     if not chunks:
         raise ValueError(f"{slug} produced no chunks; the fixture is empty or unreadable")
 
     stored = await _stored_content(pool, slug)
-    pending = [c for c in chunks if stored.get(c.id) != c.content]
+    pending = chunks if reembed_all else [c for c in chunks if stored.get(c.id) != c.content]
 
     if pending:
         # The embedder batches at cfg.embedding.batch_size and backs off on
@@ -137,9 +139,31 @@ async def ingest_all(
     pool: PostgresPool, embedder: EmbeddingProvider, cfg: RagConfig
 ) -> list[IngestResult]:
     manifest = load_manifest()
+
+    # Resume skips a chunk whose CONTENT is unchanged — but a vector is made by
+    # a model, and the content check cannot see the model. Switching profiles
+    # between runs (the `local` profile embeds with FakeEmbedder, `hosted` with
+    # Gemini) therefore skipped all 71 chunks and then rewrote the manifest to
+    # name the new embedder, leaving fake vectors labelled as Gemini ones.
+    #
+    # That defeats the startup check exactly where it matters most: the check
+    # compares the configured embedder against the manifest, both of which now
+    # agree, so the service starts happily and returns the plausible-looking
+    # garbage ARCHITECTURE.md §5 exists to prevent. Observed while building
+    # TICKET-7, which is the first thing to make switching embedders routine.
+    existing = await PostgresDenseStore(pool).read_manifest()
+    built_by = existing.embedding_model_id if existing else embedder.model_id
+    reembed_all = built_by != embedder.model_id
+    if reembed_all:
+        print(
+            f"index was built by {built_by!r} and this run uses {embedder.model_id!r}: "
+            f"re-embedding every chunk, because a stored vector cannot be reused "
+            f"across models"
+        )
+
     results = []
     for slug in sorted(manifest["drugs"]):
-        result = await ingest_document(pool, embedder, slug, cfg)
+        result = await ingest_document(pool, embedder, slug, cfg, reembed_all=reembed_all)
         print(f"  {result}")
         results.append(result)
 

@@ -67,6 +67,10 @@ The transport is **NDJSON**, one JSON object per line, not SSE. An earlier draft
 
 **Frontend** — a single question box, a streaming answer pane with inline citations, and a telemetry strip showing gate decision, fused scores, retrieval latency, time to first token, and which provider served the request. The telemetry strip is a product feature, not debug output; it is the part that shows engineering rather than describing it.
 
+Built in `web/` as a Next.js app and **deployed alongside the API as a second service in one Vercel project**, sharing a domain. That is what makes `/api/chat` same-origin: there is no CORS to configure and no API base URL to hold in an environment variable — a configuration axis whose only failure mode is silent, since a frontend pointed at the wrong backend looks exactly like one that works. Local development keeps the same code path with a dev-only rewrite in `web/next.config.ts`. The layout is described in `vercel.json`; TICKET-10 activates it.
+
+The strip renders the gate's two conditions **separately, and never merged into one confidence number** — that merge is precisely what ADR-003 rejected, and doing it in the interface would undo the decision in the one place nobody would look for it. It also names which condition *decided* a refusal, which is not the same as which condition is false: the gate consults lexical support only in the middle band between the two thresholds, so a high-similarity answer can legitimately proceed with no lexical agreement at all.
+
 **Ingestion job** — runs on a developer machine or in CI, never in a request handler. Writes to the same stores the query path reads.
 
 ## 4. Ports

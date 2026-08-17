@@ -66,7 +66,23 @@ async def answer_stream(question: str, state: AppState) -> AsyncIterator[str]:
     except Exception as exc:  # noqa: BLE001 - classified, then reported as a frame
         failure = classify(exc)
         yield frame("error", code=failure.code, message=failure.message)
-        yield frame("done", truncated=True)
+        # The same shape as every other `done`, including the three below. This
+        # frame used to be a bare {"type": "done", "truncated": true} — one
+        # frame type with two shapes, which every client inherits as a special
+        # case forever. Retrieval failed, so there is no gate decision and no
+        # provider: the telemetry is empty rather than absent, and `truncated`
+        # lives where it lives on all the others.
+        yield frame(
+            "done",
+            telemetry=done_payload(
+                ttft_ms=None,
+                total_tokens=0,
+                served_by=None,
+                truncated=True,
+            ),
+            was_declined=False,
+            decline_reason=None,
+        )
         return
 
     # `meta` waits for retrieval because it carries the gate decision. That

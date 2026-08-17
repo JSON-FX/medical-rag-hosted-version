@@ -32,6 +32,41 @@ def test_the_error_lists_what_is_actually_registered():
         build_profile(load_config(env={"RAG_PROFILE": "nonsense"}))
 
 
+def test_the_local_profile_is_real_storage_with_fake_inference():
+    """TICKET-7 D3. The point is a running API with real chunks, real titles
+    and real page anchors, costing nothing per request — the third ticket to
+    want this."""
+    from rag_adapters.fakes import FakeEmbedder, FakeGenerator
+    from rag_adapters.postgres import PostgresDenseStore, PostgresLexicalStore
+
+    profile = build_profile(load_config(env={"RAG_PROFILE": "local"}))
+    assert profile.name == "local"
+    assert isinstance(profile.embedder, FakeEmbedder)
+    assert isinstance(profile.generator, FakeGenerator)
+    assert isinstance(profile.dense, PostgresDenseStore)
+    assert isinstance(profile.lexical, PostgresLexicalStore)
+    assert profile.resources, "the pool must be opened and closed by the shell"
+
+
+def test_the_local_profile_is_not_the_fake_profile():
+    """Both are needed and they are not interchangeable: `fake` is the
+    zero-dependency test profile and must never require a database."""
+    local = build_profile(load_config(env={"RAG_PROFILE": "local"}))
+    fake = build_profile(load_config(env={"RAG_PROFILE": "fake"}))
+    assert type(local.dense) is not type(fake.dense)
+    assert fake.resources == (), "the fake profile connects to nothing"
+
+
+def test_the_local_generator_streams_enough_tokens_to_show_streaming():
+    """A scripted answer shorter than the sentinel filter's 44-character buffer
+    arrives as a single frame, and a frontend built against that cannot tell
+    progressive rendering from a spinner."""
+    profile = build_profile(load_config(env={"RAG_PROFILE": "local"}))
+    answer = "".join(profile.generator._tokens)
+    assert len(answer) > 44
+    assert "[1]" in answer and "[2]" in answer, "citations are what the UI has to resolve"
+
+
 def test_building_the_hosted_profile_does_not_connect():
     """Construction is synchronous and the pool needs a running event loop, so
     building must succeed against a database that does not exist. The failure

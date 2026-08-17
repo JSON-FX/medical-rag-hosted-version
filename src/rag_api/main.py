@@ -76,14 +76,26 @@ def create_app() -> FastAPI:
     startup.
     """
     application = FastAPI(title="Medical RAG — hosted", lifespan=lifespan)
-    # Permissive for local development. TICKET-7 knows the frontend's origin
-    # and TICKET-10 deploys it; tighten there rather than guessing now.
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["GET", "POST"],
-        allow_headers=["*"],
-    )
+    profile = load_config().profile
+    # No CORS in production, because there are no cross-origin requests to
+    # permit: the frontend and this API deploy as two Vercel services in one
+    # project sharing a domain, so the browser fetches `/api/chat`
+    # same-origin. Leaving `allow_origins=["*"]` on a public API that no
+    # longer needs any origin at all is the kind of thing a reviewer should not
+    # have to ask about, so it is narrowed to the one case that is genuinely
+    # cross-origin.
+    #
+    # Development is the one case that IS cross-origin — Next on 3000, this on
+    # 8000 — and even there `next.config.ts` proxies `/api/*` so the browser
+    # still sees one origin. This stays for a direct `curl` or a second tool
+    # pointed at port 8000, and is off anywhere else.
+    if profile != "hosted":
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+            allow_methods=["GET", "POST"],
+            allow_headers=["*"],
+        )
     application.include_router(health_router)
     application.include_router(chat_router)
     return application

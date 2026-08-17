@@ -82,6 +82,60 @@ def _build_fake(cfg: RagConfig) -> Profile:
     )
 
 
+# Long enough to clear the sentinel filter's 44-character buffer — a shorter
+# answer arrives as one frame and a frontend built against it cannot tell
+# progressive rendering from a spinner — and carrying two citation markers,
+# which is the only way to exercise the [n] -> sources[n-1] mapping without
+# spending a real generation.
+LOCAL_ANSWER = (
+    "This answer comes from the local development profile: the retrieval and "
+    "the citations are real, the words are not. The retrieved context is "
+    "cited here [1] and again here [2]."
+)
+LOCAL_ANSWER_TOKENS = [word + " " for word in LOCAL_ANSWER.split()]
+
+
+def _build_local(cfg: RagConfig) -> Profile:
+    """Real storage, fake inference — the profile you develop the frontend on.
+
+    Distinct from `fake`, which keeps everything in memory and is the
+    zero-dependency test profile. This one runs the real Postgres retrieval
+    legs over the real ingested corpus, so citations carry real titles and page
+    anchors, and swaps only the two adapters that cost money per call.
+
+    The consequence to know about: `FakeEmbedder` is a four-axis one-hot vector
+    keyed on drug name, so the stage-1 gate here is effectively inert. A
+    question naming a drug matches that drug's chunks at similarity 1.0; a
+    question naming none matches every chunk that also names none — of which
+    the corpus has many — at similarity 1.0 as well. Measured, not assumed:
+    "What is the capital of France?" is ANSWERED under this profile and refused
+    under `hosted`.
+
+    So this profile exercises the transport, the citations and the strip. It
+    does not exercise the gate. Judge refusal behaviour on `hosted` only.
+    """
+    from .postgres import PostgresDenseStore, PostgresLexicalStore, PostgresPool
+
+    pool = PostgresPool(
+        dsn=cfg.database.dsn,
+        min_size=cfg.database.pool_min_size,
+        max_size=cfg.database.pool_max_size,
+    )
+    return Profile(
+        name="local",
+        embedder=FakeEmbedder(dimension=cfg.embedding.dimension),
+        generator=FakeGenerator(
+            tokens=LOCAL_ANSWER_TOKENS,
+            # Enough to see tokens land one at a time in a browser without
+            # making the page feel broken.
+            delay_s=0.05,
+        ),
+        dense=PostgresDenseStore(pool),
+        lexical=PostgresLexicalStore(pool),
+        resources=(pool,),
+    )
+
+
 def _build_hosted(cfg: RagConfig) -> Profile:
     """Postgres for both retrieval legs (ADR-002).
 
@@ -136,11 +190,13 @@ def _build_generator(cfg: RagConfig, provider: str, *, is_primary: bool) -> Gene
         ) from None
 
 
-# The registration seam. TICKET-2 and TICKET-3 each add one entry here rather
-# than growing an if/elif chain — which is what keeps "no conditional provider
-# logic below this point" true as the number of profiles grows.
+# The registration seam. TICKET-2, TICKET-3 and TICKET-7 each add one entry
+# here rather than growing an if/elif chain — which is what keeps "no
+# conditional provider logic below this point" true as the number of profiles
+# grows.
 _REGISTRY: dict[str, Callable[[RagConfig], Profile]] = {
     "fake": _build_fake,
+    "local": _build_local,
     "hosted": _build_hosted,
 }
 
