@@ -1,8 +1,10 @@
 name: test
 
 on:
+  # Every branch, not just main: a feature branch that has not opened a PR yet
+  # should still be checked, and waiting for the PR to find out is a slow way
+  # to learn the tree is broken.
   push:
-    branches: ["main"]
   pull_request:
 
 jobs:

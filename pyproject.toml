@@ -36,6 +36,11 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
+# Prose is not ours to reformat. ruff formats Python code blocks inside
+# Markdown, which quietly rewrote the port definitions in ARCHITECTURE.md — a
+# doc whose code blocks are quoted specification, not source.
+extend-exclude = ["docs"]
+
 # NOT the ruff default of 88. The modules ported from the local build were
 # written at ~95 columns, and their wide explanatory comments carry measured
 # behaviour. Reformatting to 88 produces a large meaningless diff against the
@@ -47,7 +52,55 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+# The vendored port. These files are copied from the local build so the two
+# profiles can be diffed against each other — that diff is the only mechanism
+# proving the pipelines have not drifted, and a formatter rewrite destroys it.
+#
+# The rules suppressed below are all style preferences that would force an edit
+# to code we deliberately do not own:
+#   B905  zip() without strict=      (chunking.py, predates the parameter)
+#   B017  pytest.raises(Exception)   (test_gate.py asserts frozen-ness)
+#   E501  line too long              (written at the source repo's width)
+#   I001  import block unsorted      (source ordering, kept as-is)
+[tool.ruff.lint.per-file-ignores]
+"src/rag_core/chunking.py" = ["B905"]
+"src/rag_core/fusion.py" = ["B905", "E501"]
+"src/rag_core/gate.py" = ["B905", "E501"]
+"tests/unit/test_chunking.py" = ["E501", "I001"]
+"tests/unit/test_fusion.py" = ["E501", "I001"]
+"tests/unit/test_gate.py" = ["B017", "E501", "I001"]
+
+[tool.ruff.format]
+# Same reasoning as the per-file-ignores above: reformatting the vendored port
+# would produce a large, meaningless diff against the source repo and make real
+# divergence impossible to spot. Everything else in the tree IS formatted.
+exclude = [
+    "src/rag_core/chunking.py",
+    "src/rag_core/fusion.py",
+    "src/rag_core/gate.py",
+    "src/rag_core/prompts.py",
+    "src/rag_core/sentinel.py",
+    "tests/unit/test_chunking.py",
+    "tests/unit/test_fusion.py",
+    "tests/unit/test_gate.py",
+    "tests/unit/test_prompts.py",
+    "tests/unit/test_sentinel.py",
+]
+
 [tool.mypy]
 files = ["src"]
 python_version = "3.12"
 strict = true
+
+# gate.py and prompts.py are ported verbatim from the local build, and staying
+# diffable against it is what makes behavioural divergence between the two
+# profiles visible. Their bare `dict` annotations would need widening to
+# `dict[str, Any]` to satisfy --strict, which is a null change at runtime but a
+# real change to the diff.
+#
+# So exactly one axis of strictness is relaxed, for exactly those two modules.
+# Every other strict check still applies to them. Delete these overrides when a
+# ticket has a reason to modify either module anyway.
+[[tool.mypy.overrides]]
+module = ["rag_core.gate", "rag_core.prompts"]
+disallow_any_generics = false
