@@ -18,7 +18,15 @@ from __future__ import annotations
 import math
 from collections.abc import AsyncIterator, Iterable
 
-from rag_core.contracts import Chunk, EmbeddedChunk, IndexManifest, Scored, Token, Vector
+from rag_core.contracts import (
+    Chunk,
+    EmbeddedChunk,
+    IndexManifest,
+    Scored,
+    Token,
+    TokenStream,
+    Vector,
+)
 from rag_core.errors import ProviderUnavailable
 
 from .tsquery import extract_terms
@@ -170,7 +178,7 @@ class FakeGenerator:
         self._fail_with = fail_with
         self.calls = 0
 
-    def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[Token]:
+    def stream(self, messages: list[dict[str, str]]) -> TokenStream:
         self.calls += 1
 
         async def _generate() -> AsyncIterator[Token]:
@@ -179,4 +187,4 @@ class FakeGenerator:
             for token in self._tokens:
                 yield token
 
-        return _generate()
+        return TokenStream(_generate(), model_id=self.model_id)

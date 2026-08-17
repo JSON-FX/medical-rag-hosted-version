@@ -11,10 +11,9 @@ stated payoff of the abstraction.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from typing import Protocol
 
-from .contracts import Chunk, EmbeddedChunk, IndexManifest, Scored, Token, Vector
+from .contracts import Chunk, EmbeddedChunk, IndexManifest, Scored, TokenStream, Vector
 
 
 class EmbeddingProvider(Protocol):
@@ -45,7 +44,17 @@ class GenerationProvider(Protocol):
 
     model_id: str
 
-    def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[Token]: ...
+    def stream(self, messages: list[dict[str, str]]) -> TokenStream:
+        """Tokens from this provider, wrapped so the caller can learn which
+        model produced them.
+
+        Returning `TokenStream` rather than a bare `AsyncIterator` is what lets
+        the failover chain report the serving provider, which ADR-004 and PRD
+        F14 both require in every response. A bare iterator cannot carry that,
+        and the generator object cannot either — one instance serves concurrent
+        requests.
+        """
+        ...
 
 
 class DenseStore(Protocol):

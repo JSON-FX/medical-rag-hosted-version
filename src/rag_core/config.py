@@ -14,12 +14,17 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
-    # Deliberately not a real model id. The spike confirms which Gemini model
-    # emits 768-dimension vectors and whether truncation from the native
-    # dimension needs renormalising before cosine comparison (PRD open
-    # question 1). A confident-looking default here would be a guess wearing a
-    # measurement's clothes.
-    model_id: str = "REPLACE_ME_AFTER_SPIKE"
+    # gemini-embedding-001 is natively 3072-dimensional and reduced to 768 via
+    # output_dimensionality, which the SDK documents as truncating "excessive
+    # values in the output embedding ... from the end". Truncating a matryoshka
+    # embedding breaks its unit norm, so the adapter renormalises — see
+    # rag_adapters/gemini.py. That answers the first half of PRD open question
+    # 1; whether skipping it *measurably* hurts ranking is still unmeasured.
+    #
+    # Chosen over the natively-768 text-embedding-004 because it is the current
+    # generation and less likely to be retired during the demo's life, which
+    # PRD success criterion 6 cares about.
+    model_id: str = "gemini-embedding-001"
     dimension: int = 768
     batch_size: int = 32
     request_timeout_s: int = 120
@@ -30,9 +35,28 @@ class GenerationConfig:
     # Two providers behind one port, with automatic failover (ADR-004). Free
     # tiers change quota without notice, so a single-provider demo is a demo
     # with an expiry date nobody told you about.
-    primary_model_id: str = "REPLACE_ME"
-    secondary_model_id: str = "REPLACE_ME"
+    #
+    # Groq leads because time-to-first-token is the NFR with a hard number
+    # (<2.5s p50) and its inference is substantially faster. Gemini as the
+    # secondary keeps the two failure domains genuinely independent — different
+    # company, different quota, different outage — which is what ADR-004 is
+    # actually buying.
+    primary_provider: str = "groq"
+    primary_model_id: str = "llama-3.3-70b-versatile"
+    secondary_provider: str = "gemini"
+    secondary_model_id: str = "gemini-2.0-flash"
     request_timeout_s: int = 300
+
+
+@dataclass(frozen=True)
+class ProvidersConfig:
+    # Empty by default so the fake profile needs nothing. Both SDKs will read
+    # these from the environment themselves if not passed a key — which is
+    # exactly why they are read here instead. This module's docstring says it
+    # is the single boundary between os.environ and the pipeline, and an SDK
+    # quietly reaching around it makes that a lie and the tests non-hermetic.
+    gemini_api_key: str = ""
+    groq_api_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -82,6 +106,7 @@ class GateConfig:
 class RagConfig:
     profile: str = "fake"
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
@@ -110,14 +135,20 @@ def load_config(env: Mapping[str, str] | None = None) -> RagConfig:
             pool_max_size=_i("DB_POOL_MAX", 10),
         ),
         embedding=EmbeddingConfig(
-            model_id=_s("EMBED_MODEL", "REPLACE_ME_AFTER_SPIKE"),
+            model_id=_s("EMBED_MODEL", "gemini-embedding-001"),
             dimension=_i("EMBED_DIMENSIONS", 768),
             batch_size=_i("EMBED_BATCH_SIZE", 32),
             request_timeout_s=_i("EMBED_TIMEOUT_S", 120),
         ),
+        providers=ProvidersConfig(
+            gemini_api_key=_s("GEMINI_API_KEY", ""),
+            groq_api_key=_s("GROQ_API_KEY", ""),
+        ),
         generation=GenerationConfig(
-            primary_model_id=_s("PRIMARY_MODEL", "REPLACE_ME"),
-            secondary_model_id=_s("SECONDARY_MODEL", "REPLACE_ME"),
+            primary_provider=_s("PRIMARY_PROVIDER", "groq"),
+            primary_model_id=_s("PRIMARY_MODEL", "llama-3.3-70b-versatile"),
+            secondary_provider=_s("SECONDARY_PROVIDER", "gemini"),
+            secondary_model_id=_s("SECONDARY_MODEL", "gemini-2.0-flash"),
             request_timeout_s=_i("GENERATION_TIMEOUT_S", 300),
         ),
         chunk=ChunkConfig(size=_i("CHUNK_SIZE", 1000), overlap=_i("CHUNK_OVERLAP", 150)),

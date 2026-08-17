@@ -89,6 +89,8 @@ def _build_hosted(cfg: RagConfig) -> Profile:
     building a hosted profile against an unreachable database succeeds and
     fails later, where the error can be reported properly.
     """
+    from .failover import FailoverGenerator
+    from .gemini import GeminiEmbedder
     from .postgres import PostgresDenseStore, PostgresLexicalStore, PostgresPool
 
     pool = PostgresPool(
@@ -98,14 +100,40 @@ def _build_hosted(cfg: RagConfig) -> Profile:
     )
     return Profile(
         name="hosted",
-        # Placeholder until TICKET-3 lands the Gemini and Groq adapters. The
-        # stores below are real; inference is not yet.
-        embedder=FakeEmbedder(dimension=cfg.embedding.dimension),
-        generator=FakeGenerator(model_id=cfg.generation.primary_model_id),
+        embedder=GeminiEmbedder(cfg),
+        generator=FailoverGenerator(
+            primary=_build_generator(cfg, cfg.generation.primary_provider, is_primary=True),
+            secondary=_build_generator(cfg, cfg.generation.secondary_provider, is_primary=False),
+        ),
         dense=PostgresDenseStore(pool),
         lexical=PostgresLexicalStore(pool),
         resources=(pool,),
     )
+
+
+def _build_generator(cfg: RagConfig, provider: str, *, is_primary: bool) -> GenerationProvider:
+    """Resolve a provider name to a generator.
+
+    A name→builder map rather than an if/elif inside FailoverGenerator, so
+    ADR-004's "no conditional provider logic anywhere below the composition
+    root" stays true: the chain knows it has two generators and nothing about
+    who made them.
+    """
+    from .gemini import GeminiGenerator
+    from .groq import GroqGenerator
+
+    model_id = cfg.generation.primary_model_id if is_primary else cfg.generation.secondary_model_id
+    builders: dict[str, Callable[[], GenerationProvider]] = {
+        "groq": lambda: GroqGenerator(cfg, model_id=model_id),
+        "gemini": lambda: GeminiGenerator(cfg, model_id=model_id),
+    }
+    try:
+        return builders[provider]()
+    except KeyError:
+        valid = ", ".join(sorted(builders))
+        raise ValueError(
+            f"unknown generation provider {provider!r}; expected one of: {valid}"
+        ) from None
 
 
 # The registration seam. TICKET-2 and TICKET-3 each add one entry here rather

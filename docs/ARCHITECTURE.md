@@ -411,10 +411,16 @@ Two providers means two prompt behaviours to validate and two sets of quirks. Th
 
 ### Action items
 
-1. [ ] Implement failover on rate limit and error, with one retry before falling through
-2. [ ] Surface the active provider in the response payload and the UI
-3. [ ] Validate the prompt against both models on the evaluation set
-4. [ ] Health check that exercises the secondary path on a schedule
+1. [x] Implement failover on rate limit and error, with one retry before falling through — `rag_adapters/failover.py`. **Groq primary, Gemini secondary**: time-to-first-token is the NFR with a hard number and Groq is faster, and two vendors keeps the quota and outage domains genuinely independent.
+2. [~] Surface the active provider — `TokenStream.served_by` carries it per request. The response payload is TICKET-5's and the UI is TICKET-7's.
+3. [~] Validate the prompt against both models — a `live`-marked smoke test asserts both emit the exact sentinel on insufficient context. Validating across the **evaluation set** needs the harness and stays with TICKET-8.
+4. [ ] Health check that exercises the secondary path on a schedule (TICKET-6)
+
+### Note on the failover boundary
+
+Failover happens **only before the first token**. Once a token is on the wire it cannot be retracted — the same constraint the stage-2 sentinel buffers for — so a mid-stream failure propagates and the response is marked truncated rather than being silently replaced by a second attempt.
+
+That is narrower than "automatic failover" sounds, and it covers the case that actually dominates: a rate limit rejecting the request outright, before anything has been generated. The alternatives were buffering the whole answer before emitting it, which destroys the streaming demo and the time-to-first-token target the telemetry strip exists to show; or re-emitting from the top on the secondary, which needs a wire-contract for discarding tokens the reader has already seen.
 
 ---
 

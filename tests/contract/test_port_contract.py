@@ -24,20 +24,21 @@ thresholds have quietly stopped meaning anything (ADR-003).
 from datetime import UTC, datetime
 
 import pytest
+from providers import EMBEDDERS, GENERATORS
 from stores import CORPUS, STORE_PAIRS, embedded
 
-from rag_adapters.fakes import DIMENSIONS, FakeEmbedder, FakeGenerator
+from rag_adapters.fakes import DIMENSIONS, FakeEmbedder
 from rag_core.contracts import IndexManifest
 
 # --- registries ----------------------------------------------------------
 #
-# Embedders and generators are still constructed directly: they have no
-# lifecycle and no shared state, so a class is a fine builder. TICKET-3 adds
-# its adapters here. The STORES registry lives in conftest.py, because a store
-# needs setup, teardown and a profile-specific way to be seeded.
-
-EMBEDDERS = [pytest.param(FakeEmbedder, id="fake")]
-GENERATORS = [pytest.param(FakeGenerator, id="fake")]
+# EMBEDDERS and GENERATORS live in providers.py and STORE_PAIRS in stores.py,
+# each next to the doubles it needs.
+#
+# Adding a provider IS one line, as TICKET-1 promised. Adding a store needed a
+# fixture and a rebuild of this file, because a store has a connection and a
+# lifecycle and a provider does not — which is why TICKET-2 left these two
+# registries alone.
 
 
 # --- EmbeddingProvider ---------------------------------------------------
